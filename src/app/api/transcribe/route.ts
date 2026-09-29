@@ -1,8 +1,10 @@
 import { conversationProvider } from "@/lib/provider";
+import { checkRateLimit } from "@/lib/rateLimit";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 const accepted = new Set(["audio/webm", "audio/ogg", "audio/mp4", "audio/wav", "audio/mpeg"]);
 export async function POST(request: Request) {
+  if (!checkRateLimit(request, "transcription")) return Response.json({ error: "The voice demo has reached its usage limit for now." }, { status: 429 });
   if (!process.env.GEMINI_API_KEY) return Response.json({ error: "Cloud transcription needs a Gemini API key. Please type your question instead." }, { status: 503 });
   try {
     const form = await request.formData();
@@ -21,7 +23,7 @@ export async function POST(request: Request) {
       if (response.status !== 503) break;
     }
     if (!response) throw new Error("No transcription response");
-    if (!response.ok) return Response.json({ error: "Voice transcription is temporarily unavailable. Please type your question." }, { status: 502 });
+    if (!response.ok) return Response.json({ error: response.status === 403 ? "Gemini access is disabled for this API key. Please type your question until a valid key is configured." : "Voice transcription is temporarily unavailable. Please type your question." }, { status: response.status === 403 ? 503 : 502 });
     const result = await response.json();
     const text = String(result.candidates?.[0]?.content?.parts?.filter((part: { text?: string }) => part.text).map((part: { text: string }) => part.text).join("") || "").trim().slice(0, 2000);
     if (!text || /^\s*(?:[<[]?(?:noise|silence|no speech|inaudible|music)[>\]]?|nothing|none)\s*[.!]?$/i.test(text)) return Response.json({ error: "I couldn't hear you clearly. Please repeat that." }, { status: 422 });

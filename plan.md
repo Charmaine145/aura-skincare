@@ -249,7 +249,7 @@ task/
 - [x] **Step 3**: Implement tool definitions (`src/lib/tools.ts`) for `get_order_details`, `cancel_order`, and return eligibility.
 - [x] **Step 4**: Implement the LLM conversation route (`src/app/api/chat/route.ts`) with function calling, persona instructions, and strict guardrails. Provider-backed runtime verification remains pending an API key.
 - [x] **Step 5**: Implement post-call summary generation API (`src/app/api/summary/route.ts`) producing the exact required JSON schema.
-- [ ] **Step 6**: Implement speech engine and audio manager with Web Speech STT/TTS + cloud TTS streaming support, including barge-in handling.
+- [x] **Step 6**: Implement speech engine and audio manager with Web Speech STT/TTS + cloud TTS streaming support, including barge-in handling. Human acoustic validation remains pending.
 - [x] **Step 7**: Build the frontend UI:
   - Header & Brand styling.
   - Interactive Voice Visualizer & Live State Indicator.
@@ -257,7 +257,7 @@ task/
   - Test Orders Helper card (showing ORD-101, ORD-102, ORD-103).
   - Real-time conversation transcript.
   - Post-Call Summary modal with JSON formatting & copy option.
-- [ ] **Step 8**: Test all evaluation scenarios (order lookup, policy violation, cancellation, out-of-scope, edge cases).
+- [x] **Step 8**: Test evaluation scenarios (order lookup, policy violation, cancellation, out-of-scope, edge cases) in automated policy tests and the browser text-call path. Human microphone validation remains pending.
 - [x] **Step 9**: Prepare `.env.example`, thorough `README.md` with Section 9 questions answered, demo script, and approach note. Recording and external submission links remain outstanding.
 
 ## 9. Implementation review — 29 September 2026
@@ -287,4 +287,8 @@ Review changes and scope decisions:
 - Added microphone-level voice activity detection for automatic barge-in, with an on-page switch to disable it if speaker echo triggers it. Existing explicit interruption remains.
 - Added browser `MediaRecorder` capture with speech/silence segmentation and a Gemini transcription endpoint. This covers browsers without `SpeechRecognition` and provides a selectable clearer speech path. No recordings are saved by the application.
 - Upgraded to Gemini 3.8 Flash-Lite TTS and added streaming PCM playback with an ordinary WAV request and browser synthesis as fallbacks. Streamed PCM and Gemini transcription were verified with the supplied key using generated speech. Browser microphone access remains unavailable on this host, so acoustic quality and actual spoken interruption still require human testing.
-- Added automated route and VAD checks. Public hosting, public GitHub repository, a real demo recording, and the candidate's LinkedIn URL require external account access or user-provided information; local source and a demo walkthrough are prepared.
+- Added automated route and VAD checks. Public hosting, public GitHub repository, and a real demo recording require external account access; a detailed recording walkthrough and the candidate's LinkedIn URL are prepared.
+
+## 12. Finalization status — 29 September 2026
+
+The production build and automated checks pass. Google rejected the first key supplied in chat as reported leaked. A replacement key was added only to ignored `.env.local` and was verified with live Gemini conversation, transcription, unary WAV and streamed PCM calls. The application can also run in its labelled rule-based demo mode without an API key. The public hosting and repository links and the real recorded demo remain external submission work.

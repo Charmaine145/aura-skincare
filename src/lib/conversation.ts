@@ -87,7 +87,7 @@ export async function aiReply(history: { role: "user" | "assistant"; content: st
         const details = await response.text();
         console.error("Conversation provider response", response.status, details.replaceAll(provider.key, "[redacted]").slice(0, 1800));
       }
-      throw new Error(response.status === 429 ? `${provider.name} has reached its usage limit. Please try again shortly.` : `${provider.name} is temporarily unavailable. Please try again.`);
+      throw new Error(response.status === 403 ? `${provider.name} access is disabled for this API key. Add a valid key to the server to restore AI conversation.` : response.status === 429 ? `${provider.name} has reached its usage limit. Please try again shortly.` : `${provider.name} is temporarily unavailable. Please try again.`);
     }
     const payload = await response.json();
     const parts: GeminiPart[] | undefined = gemini ? payload.candidates?.[0]?.content?.parts : undefined;
@@ -96,7 +96,7 @@ export async function aiReply(history: { role: "user" | "assistant"; content: st
     if (!message.tool_calls?.length) {
       const reply = authoritativeReply || message.content?.trim();
       if (!reply) throw new Error("The conversation provider returned an empty response.");
-      if (!authoritativeReply && !usedTool) appendOutcome(session, { intent: detectIntent(current), order_id: null, resolution: "NEEDS_INFORMATION", detail: reply });
+      if (!authoritativeReply && !usedTool) { const intent = detectIntent(current); appendOutcome(session, { intent, order_id: null, resolution: intent === "OUT_OF_SCOPE" ? "POLICY_DECLINED" : "NEEDS_INFORMATION", detail: reply }); }
       if (usedTool && !authoritativeReply && session.outcomes.length) session.outcomes[session.outcomes.length - 1].detail = reply;
       return reply;
     }

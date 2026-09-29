@@ -34,7 +34,7 @@ Microphone → browser SpeechRecognition (`en-IN`) or Gemini transcription → `
 
 The three fixtures are in `src/data/orders.ts`. Policy tools check the stored order status and delivery age, rather than allowing the model to decide eligibility. Cancellation and return tool responses are returned directly for speech, so a model cannot rewrite those refusals as an approval. Unknown return facts remain unknown; eligibility requires unopened, unused, original packaging. Damage has a separate 48-hour window and photo requirement. No refund, replacement, or pickup action is implemented or claimed.
 
-Per-call cancellations and chronological tool outcomes live in an HMAC-signed session token. The immutable order fixtures are never mutated by cancellation. This isolates evaluator calls and works across stateless instances when `SESSION_SECRET` is shared. Tokens expire after an hour. The `/api/summary` route derives a structured outcome from verified server outcomes, not a second model's guesses. General AI policy turns without a tool are conservatively marked `NEEDS_INFORMATION`, because the backend has no independent proof of resolution. Multiple intents are labelled `MULTIPLE_INTENTS`; a single `order_id` is null if multiple orders were discussed. The final relevant outcome determines resolution; the summary text includes earlier outcomes too.
+Per-call cancellations and chronological tool outcomes live in an HMAC-signed session token. The immutable order fixtures are never mutated by cancellation. This isolates evaluator calls and works across stateless instances when `SESSION_SECRET` is shared. Tokens expire after an hour. General AI policy turns without a tool are conservatively marked `NEEDS_INFORMATION`, because the backend has no independent proof of resolution; out-of-scope requests are marked `POLICY_DECLINED`. Multiple intents are labelled `MULTIPLE_INTENTS`; a single `order_id` is null if multiple orders were discussed. The final relevant outcome determines resolution; the summary text includes earlier outcomes too.
 
 The source policy says “above ₹499” and “below ₹499”; exactly ₹499 is undefined. Aria acknowledges this gap. Order dates/relative ages are fixed evaluation fixtures, not an actual live courier feed. No real orders, money, or personal data are changed.
 
@@ -53,11 +53,11 @@ npm run build
 npm audit
 ```
 
-Tests exercise policy boundaries, rejection of session tampering/expiration, cancellation isolation/idempotency, spoken ID normalization, ambiguous shipping fee, invalid IDs, context, scope, Gemini tool calls, WAV conversion, streamed PCM, transcription route, voice activity detection, voice selection and summaries. Build/type checks validate the application. Live Gemini lookup, transcription, unary WAV and streamed PCM responses were checked with the configured key; actual microphone and speaker quality still need a human browser test. The dependency override updates the PostCSS version bundled by Next.js 15.
+Tests exercise policy boundaries, rejection of session tampering/expiration, cancellation isolation/idempotency, spoken ID normalization, ambiguous shipping fee, invalid IDs, context, scope, Gemini tool calls, WAV conversion, streamed PCM, transcription route, voice activity detection, voice selection and summaries. Build/type checks validate the application. A replacement key was verified live with Gemini conversation, transcription, unary WAV and streamed PCM responses; the key remains only in ignored `.env.local`. Actual microphone and speaker quality still need a human browser test. The dependency override updates the PostCSS version bundled by Next.js 15.
 
 ## Deployment
 
-Import this Next.js project into Vercel, configure `GEMINI_API_KEY` and a long random `SESSION_SECRET`, then deploy. HTTPS is required for microphone access outside localhost. `SESSION_SECRET` must match across instances/redeployments while calls are active. Do not deploy a publicly funded provider endpoint without adding application authentication, shared rate limiting and spend controls. This assessment implementation has input bounds/timeouts but no production access control.
+Import this Next.js project into Vercel, configure `GEMINI_API_KEY` and a long random `SESSION_SECRET`, then deploy. HTTPS is required for microphone access outside localhost. `SESSION_SECRET` must match across instances/redeployments while calls are active. A simple per-instance hourly rate limit bounds casual demo use. For a sustained public deployment, add authentication, shared rate limiting and spend controls; this assessment implementation has no production access control.
 
 Deployment and GitHub publication are not completed by local implementation. The original confidential assessment PDF should not be committed to a public repository. Keep the source, README, lockfile and `.env.example`; never publish `.env.local` or generated files in `output/`.
 
@@ -73,8 +73,8 @@ Deployment and GitHub publication are not completed by local implementation. The
 
 ## Demo and submission
 
-Suggested 3–5 minute recording: introduce Aria and preview the voice choices; start voice call; track ORD-101; attempt return of ORD-102; cancel ORD-103; try a flight request; end call; show JSON and download transcript; explain the modular pipeline and policy functions.
+The exact 3–5 minute recording walkthrough is in [DEMO.md](DEMO.md).
 
 **Approach note:** Aria uses a modular browser voice pipeline with server-side order tools and explicit policy checks. A simple care-focused interface exposes sample orders, live conversation state, and post-call outcomes, while signed per-call state keeps demo actions isolated.
 
-Submission still requires your public app URL, GitHub repository URL, recorded demo URL, and accessible LinkedIn profile. See the supplied assessment for recipients and subject; no email has been sent.
+Submission still requires your public app URL, GitHub repository URL, and recorded demo URL. LinkedIn: [Aditya Acharya](https://www.linkedin.com/in/adityaacharyax/). See the supplied assessment for recipients and subject; no email has been sent.

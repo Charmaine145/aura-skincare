@@ -39,3 +39,10 @@ test("a completed Gemini lookup remains resolved in the call summary", async () 
   try { const session = newSession(); assert.match(await aiReply([{ role: "user", content: "Where is ORD-101?" }], session), /out for delivery/); assert.equal(session.outcomes.length, 1); assert.equal(session.outcomes[0].resolution, "RESOLVED"); }
   finally { globalThis.fetch = originalFetch; if (originalKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = originalKey; if (originalModel === undefined) delete process.env.GEMINI_MODEL; else process.env.GEMINI_MODEL = originalModel; }
 });
+test("an out-of-scope Gemini reply is recorded as a policy decline", async () => {
+  const originalFetch = globalThis.fetch, originalKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = "test-key";
+  globalThis.fetch = (async () => Response.json({ candidates: [{ content: { parts: [{ text: "I can help with Aura Skincare, but cannot book flights." }] } }] })) as typeof fetch;
+  try { const session = newSession(); await aiReply([{ role: "user", content: "Can you book me a flight?" }], session); assert.equal(session.outcomes.at(-1)?.resolution, "POLICY_DECLINED"); }
+  finally { globalThis.fetch = originalFetch; if (originalKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = originalKey; }
+});

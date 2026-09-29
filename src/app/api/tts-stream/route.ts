@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { readBody } from "@/lib/validation";
+import { checkRateLimit } from "@/lib/rateLimit";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 const schema = z.object({ text: z.string().trim().min(1).max(2000), voice: z.enum(["Aoede", "Sulafat", "Leda"]) }).strict();
 export async function POST(request: Request) {
+  if (!checkRateLimit(request, "tts")) return Response.json({ error: "The voice demo has reached its usage limit for now." }, { status: 429 });
   if (!process.env.GEMINI_API_KEY) return Response.json({ error: "Gemini streaming voice is unavailable." }, { status: 503 });
   try {
     const { text, voice } = schema.parse(await readBody(request));
@@ -14,7 +16,7 @@ export async function POST(request: Request) {
       body: JSON.stringify({ contents: [{ parts: [{ text: `Speak exactly this text as Aria, a warm adult female care specialist, with friendly natural Indian English cadence. Do not add words: ${text}` }] }], generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } } }),
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(50000)]),
     });
-    if (!upstream.ok || !upstream.body) return Response.json({ error: "Streaming voice is temporarily unavailable." }, { status: 502 });
+    if (!upstream.ok || !upstream.body) return Response.json({ error: upstream.status === 403 ? "Gemini access is disabled for this API key." : "Streaming voice is temporarily unavailable." }, { status: 502 });
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const reader = upstream.body!.getReader(); const decoder = new TextDecoder(); let pending = "";

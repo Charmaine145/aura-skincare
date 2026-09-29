@@ -48,14 +48,17 @@ export class VoicePlayer {
     if (!response.ok || !response.body) throw new Error("Streaming voice unavailable");
     const context = new AudioContext({ sampleRate: 24000 }); this.streamContext = context;
     await context.resume();
-    const reader = response.body.getReader(); let nextTime = context.currentTime + .08, played = false;
+    const reader = response.body.getReader(); let nextTime = context.currentTime + .08, played = false, oddByte: number | undefined;
     try {
       while (true) {
         const { value, done } = await reader.read(); if (done) break;
         if (epoch !== this.epoch) return false;
-        const samples = Math.floor(value.length / 2); if (!samples) continue;
+        let bytes = value;
+        if (oddByte !== undefined) { bytes = new Uint8Array(value.length + 1); bytes[0] = oddByte; bytes.set(value, 1); oddByte = undefined; }
+        if (bytes.length % 2) { oddByte = bytes[bytes.length - 1]; bytes = bytes.subarray(0, -1); }
+        const samples = bytes.length / 2; if (!samples) continue;
         const buffer = context.createBuffer(1, samples, 24000); const channel = buffer.getChannelData(0);
-        const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         for (let i = 0; i < samples; i++) channel[i] = view.getInt16(i * 2, true) / 32768;
         const source = context.createBufferSource(); source.buffer = buffer; source.connect(context.destination);
         nextTime = Math.max(nextTime, context.currentTime + .03); source.start(nextTime); nextTime += buffer.duration;

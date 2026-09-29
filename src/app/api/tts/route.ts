@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { pcmToWav } from "@/lib/audio";
 import { readBody } from "@/lib/validation";
+import { checkRateLimit } from "@/lib/rateLimit";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 const schema = z.object({ text: z.string().trim().min(1).max(2000), voice: z.enum(["Aoede", "Sulafat", "Leda"]).default("Aoede") }).strict();
@@ -16,6 +17,7 @@ function cacheAudio(key: string, bytes: Buffer, type: string) {
 }
 function audioResponse(bytes: Buffer, type: string) { return new Response(new Uint8Array(bytes), { headers: { "Content-Type": type, "Cache-Control": "no-store" } }); }
 export async function POST(request: Request) {
+  if (!checkRateLimit(request, "tts")) return Response.json({ error: "The voice demo has reached its usage limit for now." }, { status: 429 });
   const gemini = Boolean(process.env.GEMINI_API_KEY);
   if (!gemini && !process.env.OPENAI_API_KEY) return Response.json({ error: "Premium voice needs a configured API key. Browser voice is available." }, { status: 503 });
   try {
@@ -32,7 +34,7 @@ export async function POST(request: Request) {
           generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } } }),
         signal: AbortSignal.any([AbortSignal.timeout(45000), request.signal]),
       });
-      if (!response.ok) return Response.json({ error: response.status === 429 ? "Premium voice has reached its usage limit. Using browser voice for now." : "Premium voice is unavailable. Using browser voice for now." }, { status: response.status === 429 ? 429 : 502 });
+      if (!response.ok) return Response.json({ error: response.status === 403 ? "Gemini access is disabled for this API key. Using browser voice for now." : response.status === 429 ? "Premium voice has reached its usage limit. Using browser voice for now." : "Premium voice is unavailable. Using browser voice for now." }, { status: response.status === 429 ? 429 : 502 });
       const data = await response.json();
       const audio = data.candidates?.[0]?.content?.parts?.find((part: { inlineData?: { data: string; mimeType: string } }) => part.inlineData?.data)?.inlineData;
       if (!audio || !/^audio\/(L16|pcm|wav)/i.test(audio.mimeType)) throw new Error("Unexpected audio format");

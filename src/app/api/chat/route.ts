@@ -3,9 +3,11 @@ import { aiReply, demoReply } from "@/lib/conversation";
 import { readSession, signSession } from "@/lib/session";
 import { historySchema, readBody } from "@/lib/validation";
 import { conversationProvider } from "@/lib/provider";
+import { checkRateLimit } from "@/lib/rateLimit";
 export const runtime = "nodejs";
 const schema = z.object({ messages: historySchema, session: z.string().max(60000).optional() }).strict();
 export async function POST(request: Request) {
+  if (!checkRateLimit(request, "chat")) return Response.json({ error: "This browser has reached the demo call limit for now. Please try again later." }, { status: 429 });
   try {
     const input = schema.parse(await readBody(request));
     if (input.messages.at(-1)?.role !== "user") return Response.json({ error: "A customer message is required." }, { status: 400 });
