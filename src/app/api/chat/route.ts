@@ -1,24 +1,73 @@
 import { z } from "zod";
-import { aiReply, demoReply } from "@/lib/conversation";
-import { readSession, signSession } from "@/lib/session";
-import { historySchema, readBody } from "@/lib/validation";
-import { conversationProvider } from "@/lib/provider";
+import { runTurn } from "@/lib/agent/agent";
+import { getProvider } from "@/lib/agent/providers";
 import { checkRateLimit } from "@/lib/rateLimit";
+import { BRAND_IDS, type BrandId } from "@/data/brand";
+import { readSession, signSession } from "@/lib/session";
+import { historySchema, readBody, sessionTokenSchema } from "@/lib/validation";
+import type { ChatStreamEvent } from "@/types";
+
 export const runtime = "nodejs";
-const schema = z.object({ messages: historySchema, session: z.string().max(60000).optional() }).strict();
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+const bodySchema = z.object({
+  messages: historySchema,
+  session: sessionTokenSchema,
+  language: z.string().regex(/^[a-z]{2}-[A-Z]{2}$/).optional(),
+  // The brand a new call is for; a call in progress stays with the brand in its signed session.
+  brand: z.enum(BRAND_IDS as [BrandId, ...BrandId[]]).optional(),
+}).strict();
+
+/**
+ * Runs one customer turn and streams newline-delimited JSON events:
+ * tool calls and guardrails as they happen, then the reply, then the new signed session.
+ */
 export async function POST(request: Request) {
-  if (!checkRateLimit(request, "chat")) return Response.json({ error: "This browser has reached the demo call limit for now. Please try again later." }, { status: 429 });
-  try {
-    const input = schema.parse(await readBody(request));
-    if (input.messages.at(-1)?.role !== "user") return Response.json({ error: "A customer message is required." }, { status: 400 });
-    const session = readSession(input.session);
-    if (session.outcomes.length >= 100) return Response.json({ error: "Please end this call and start a new one." }, { status: 400 });
-    const provider = conversationProvider();
-    const isAI = Boolean(provider);
-    const reply = isAI ? await aiReply(input.messages, session) : demoReply(input.messages.at(-1)!.content, session);
-    return Response.json({ reply, session: signSession(session), mode: isAI ? "ai" : "demo", provider: provider?.name, cancelled: session.cancelled });
-  } catch (error) {
-    const validation = error instanceof z.ZodError || error instanceof SyntaxError;
-    return Response.json({ error: validation ? "Invalid request. Please use a shorter question." : error instanceof Error ? error.message : "Something went wrong." }, { status: validation ? 400 : 503 });
+  if (!checkRateLimit(request, "chat")) {
+    return Response.json({ error: "This demo has reached its hourly limit for your network. Please try again later." }, { status: 429 });
   }
+
+  let input: z.infer<typeof bodySchema>;
+  let session: ReturnType<typeof readSession>;
+  try {
+    input = bodySchema.parse(await readBody(request));
+    session = readSession(input.session, input.brand);
+  } catch (error) {
+    const message = error instanceof z.ZodError || error instanceof SyntaxError ? "Invalid request. Please try a shorter message." : error instanceof Error ? error.message : "Invalid request.";
+    return Response.json({ error: message }, { status: 400 });
+  }
+  if (input.messages.at(-1)?.role !== "user") return Response.json({ error: "A customer message is required." }, { status: 400 });
+
+  const mode = getProvider() ? "ai" : "demo";
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: ChatStreamEvent) => {
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          // The caller hung up; nothing left to deliver.
+        }
+      };
+      const started = performance.now();
+      try {
+        const result = await runTurn(input.messages, session, send, request.signal, input.language);
+        send({ type: "reply", text: result.reply, source: result.source });
+        send({ type: "done", session: signSession(session), mode, cancelled: session.cancelled, endCall: result.endCall, ms: Math.round(performance.now() - started) });
+      } catch (error) {
+        // No "done" event: the browser keeps its previous session, so a failed turn changes nothing.
+        send({ type: "error", message: error instanceof Error && error.name !== "AbortError" && error.name !== "TimeoutError" ? error.message : "The request took too long. Please try again." });
+      }
+      try {
+        controller.close();
+      } catch {
+        // Already closed by a disconnect.
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no" },
+  });
 }

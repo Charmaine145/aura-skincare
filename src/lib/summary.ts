@@ -1,11 +1,162 @@
-import type { CallSummary, SessionData } from "@/types";
-export function summarize(session: SessionData): CallSummary {
-  const outcomes = session.outcomes;
-  const relevant = outcomes.filter(o => o.intent !== "UNKNOWN");
-  const latest = relevant.at(-1) || outcomes.at(-1);
-  const ids = [...new Set(relevant.map(o => o.order_id).filter(Boolean))];
-  const intents = [...new Set(relevant.map(o => o.intent))];
-  return { customer_intent: intents.length > 1 ? "MULTIPLE_INTENTS" : latest?.intent || "UNKNOWN", order_id: ids.length === 1 ? ids[0]! : null,
-    resolution_status: outcomes.length === 0 ? "NO_CONVERSATION" : latest?.resolution || "NEEDS_INFORMATION",
-    call_summary: outcomes.length === 0 ? "The call ended without a customer question." : relevant.length ? relevant.map(o => o.detail).join(" ") : outcomes.map(o => o.detail).join(" ") };
+import { z } from "zod";
+import { brandById, type Brand } from "@/data/brand";
+import type { ChatProvider } from "@/lib/agent/providers";
+import type { CallSummary, ChatMessage, Intent, Resolution, SessionData, TurnOutcome } from "@/types";
+
+/**
+ * Post-call record. Facts (order IDs, actions, per-issue outcomes, metrics) always come
+ * from the signed session. The model only writes the narrative and classification,
+ * and its output is schema-validated; if anything fails, a rule-based summary is used.
+ */
+
+export const INTENTS = ["ORDER_TRACKING", "CANCELLATION", "RETURN_REQUEST", "DAMAGED_PRODUCT", "POLICY_QUESTION", "HUMAN_HANDOFF", "OUT_OF_SCOPE", "GENERAL"] as const satisfies readonly Intent[];
+export const RESOLUTIONS = ["RESOLVED", "POLICY_DECLINED", "NEEDS_INFORMATION", "ESCALATED", "UNRESOLVED"] as const satisfies readonly Resolution[];
+const SENTIMENTS = ["POSITIVE", "NEUTRAL", "NEGATIVE"] as const;
+
+export interface SummaryInput {
+  session: SessionData;
+  transcript: ChatMessage[];
+  durationSeconds: number | null;
+  avgResponseMs: number | null;
+}
+
+type Issue = CallSummary["issues"][number];
+/** A real order of this call's brand (as opposed to an ID that wasn't found). */
+const knownOrder = (brand: Brand, id: string | null) => Boolean(id && brand.orders.some(o => o.order_id === id));
+
+/** One entry per (intent, order); a later outcome updates the earlier one. */
+export function mergeIssues(outcomes: TurnOutcome[], brand: Brand = brandById()): Issue[] {
+  const issues: Issue[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.intent === "GENERAL") continue;
+    // "What's your order ID?" followed by the real order is one issue, not two.
+    if (knownOrder(brand, outcome.order_id)) {
+      for (let i = issues.length - 1; i >= 0; i--) {
+        const earlier = issues[i];
+        if (earlier.intent === outcome.intent && earlier.resolution === "NEEDS_INFORMATION" && !knownOrder(brand, earlier.order_id)) issues.splice(i, 1);
+      }
+    }
+    const existing = issues.find(i => i.intent === outcome.intent && i.order_id === outcome.order_id);
+    if (existing) existing.resolution = outcome.resolution;
+    else issues.push({ intent: outcome.intent, order_id: outcome.order_id, resolution: outcome.resolution });
+  }
+  return issues;
+}
+
+const intentPhrase = (intent: Intent, brand: Brand): string => ({
+  ORDER_TRACKING: "the status of an order",
+  CANCELLATION: "cancelling an order",
+  RETURN_REQUEST: "returning a product",
+  DAMAGED_PRODUCT: "a damaged product",
+  POLICY_QUESTION: `${brand.shortName}'s policies`,
+  HUMAN_HANDOFF: "speaking with a person",
+  OUT_OF_SCOPE: `a request outside ${brand.shortName} support`,
+  GENERAL: "a general enquiry",
+})[intent];
+
+function sentimentOf(transcript: ChatMessage[]): CallSummary["customer_sentiment"] {
+  const said = transcript.filter(m => m.role === "user").map(m => m.content.toLowerCase()).join(" ");
+  if (/\b(angry|frustrat\w*|worst|terrible|useless|disappointed|ridiculous|pathetic|unacceptable|upset)\b/.test(said)) return "NEGATIVE";
+  if (/\b(thanks|thank you|great|perfect|awesome|wonderful|helpful|dhanyavaa?d|shukriya)\b/.test(said)) return "POSITIVE";
+  return "NEUTRAL";
+}
+
+export function rulesSummary({ session, transcript, durationSeconds, avgResponseMs }: SummaryInput): CallSummary {
+  const brand = brandById(session.brand);
+  const issues = mergeIssues(session.outcomes, brand);
+  const customerTurns = transcript.filter(m => m.role === "user").length;
+  const primary = issues[0];
+  const intent: Intent = primary?.intent ?? "GENERAL";
+  const latestForIntent = [...issues].reverse().find(i => i.intent === intent);
+  const details = [...new Set(session.outcomes.filter(o => o.intent !== "GENERAL").map(o => o.detail))];
+  const call_summary = customerTurns === 0
+    ? "The call ended before the customer asked anything."
+    : details.length
+      ? `Customer called about ${intentPhrase(intent, brand)}. ${details.join(" ")}`
+      : "Customer greeted Aria but did not raise a specific request.";
+
+  return {
+    brand: brand.name,
+    customer_intent: intent,
+    order_id: primaryOrder(issues, intent, brand),
+    resolution_status: customerTurns === 0 ? "NO_CONVERSATION" : session.escalations.length && intent === "HUMAN_HANDOFF" ? "ESCALATED" : latestForIntent?.resolution ?? "UNRESOLVED",
+    call_summary,
+    customer_sentiment: sentimentOf(transcript),
+    follow_up_required: session.escalations.length > 0,
+    issues,
+    actions_taken: [
+      ...session.cancelled.map(id => `Cancelled ${id} after the customer confirmed`),
+      ...session.escalations.map(e => `Created care team request ${e.reference}`),
+    ],
+    order_ids: [...new Set(issues.map(i => i.order_id).filter((id): id is string => knownOrder(brand, id)))],
+    metrics: { customer_turns: customerTurns, tool_calls: session.toolCalls, duration_seconds: durationSeconds, avg_response_ms: avgResponseMs },
+    generated_by: "rules",
+  };
+}
+
+/** The order most relevant to the call's main intent: a real order first, else any ID given. */
+function primaryOrder(issues: Issue[], intent: Intent, brand: Brand): string | null {
+  const forIntent = issues.filter(i => i.intent === intent && i.order_id);
+  return forIntent.find(i => knownOrder(brand, i.order_id))?.order_id ?? forIntent[0]?.order_id ?? null;
+}
+
+const summarySystem = (brand: Brand) => `You write structured post-call records for ${brand.name}'s customer care team.
+Use only the transcript and the verified tool outcomes. Verified outcomes are ground truth for what was looked up, declined, cancelled or escalated; never contradict them or invent order details.
+customer_intent: the main reason the customer called; if several, the first substantive one.
+resolution_status for the call overall: RESOLVED (request fulfilled or question fully answered), POLICY_DECLINED (the main request was refused under policy or was out of scope), NEEDS_INFORMATION (the call ended while Aria still needed something, such as an order ID or a confirmation), ESCALATED (handed to the human care team), UNRESOLVED (anything else).
+call_summary: one to three sentences, third person, past tense, starting with "Customer". Be specific: order IDs, statuses, decisions and actions.
+customer_sentiment: POSITIVE, NEUTRAL or NEGATIVE.
+follow_up_required: true only if someone at ${brand.shortName} must act after the call.`;
+
+const llmSchema = z.object({
+  customer_intent: z.enum(INTENTS),
+  resolution_status: z.enum(RESOLUTIONS),
+  call_summary: z.string().trim().min(10).max(700),
+  customer_sentiment: z.enum(SENTIMENTS),
+  follow_up_required: z.boolean(),
+});
+
+const jsonSchema = {
+  type: "object",
+  properties: {
+    customer_intent: { type: "string", enum: INTENTS },
+    resolution_status: { type: "string", enum: RESOLUTIONS },
+    call_summary: { type: "string" },
+    customer_sentiment: { type: "string", enum: SENTIMENTS },
+    follow_up_required: { type: "boolean" },
+  },
+  required: ["customer_intent", "resolution_status", "call_summary", "customer_sentiment", "follow_up_required"],
+  additionalProperties: false,
+};
+
+export async function modelSummary(provider: ChatProvider, input: SummaryInput, signal?: AbortSignal): Promise<CallSummary> {
+  const base = rulesSummary(input);
+  if (base.metrics.customer_turns === 0) return base;
+
+  const transcript = input.transcript.slice(-60).map(m => `${m.role === "user" ? "Customer" : "Aria"}: ${m.content.slice(0, 500)}`).join("\n");
+  const outcomes = input.session.outcomes.map(o => `- [${o.intent} · ${o.order_id ?? "no order"} · ${o.resolution}] ${o.detail}`).join("\n") || "- none";
+  const escalations = input.session.escalations.map(e => `- ${e.reference}: ${e.reason}`).join("\n") || "- none";
+  const raw = await provider.json<unknown>({
+    system: summarySystem(brandById(input.session.brand)),
+    prompt: `Transcript:\n${transcript}\n\nVerified tool outcomes (chronological):\n${outcomes}\n\nCare team requests:\n${escalations}`,
+    schema: jsonSchema,
+    signal,
+  });
+  const parsed = llmSchema.parse(raw);
+
+  // Reject a narrative that mentions an order nobody discussed.
+  const discussed = new Set([...base.issues.map(i => i.order_id), ...input.transcript.flatMap(m => m.content.toUpperCase().match(/\bORD-\d+\b/g) ?? [])]);
+  const mentioned = parsed.call_summary.toUpperCase().match(/\bORD-\d+\b/g) ?? [];
+  if (mentioned.some(id => !discussed.has(id))) throw new Error("Summary referenced an order that was not discussed.");
+
+  return {
+    ...base,
+    customer_intent: parsed.customer_intent,
+    order_id: primaryOrder(base.issues, parsed.customer_intent, brandById(input.session.brand)) ?? (parsed.customer_intent === base.customer_intent ? base.order_id : null),
+    resolution_status: parsed.resolution_status,
+    call_summary: parsed.call_summary,
+    customer_sentiment: parsed.customer_sentiment,
+    follow_up_required: parsed.follow_up_required || input.session.escalations.length > 0,
+    generated_by: provider.model,
+  };
 }

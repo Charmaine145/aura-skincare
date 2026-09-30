@@ -1,80 +1,315 @@
-# Aria · Aura Skincare
+# Aria · AI voice customer care for Aura Skincare
 
-Browser customer care for the Aura Skincare assessment. Built with Next.js 15, TypeScript, Tailwind and server-side tools. Includes browser speech recognition, Gemini or OpenAI conversation, a selectable premium female voice, sample order tools, a live transcript, and verified post-call JSON.
+Aria is a browser-based voice support agent for **Aura Skincare**, a fictional Indian D2C skincare brand (and, to show multi-brand support, a second one: **Veda Haircare**). Press **Start call**, talk to her through your microphone, and she answers out loud in a natural Indian voice. She looks up orders with function calling, enforces the brand's policies in code, recovers gracefully from unclear audio and unknown order IDs, and writes a structured JSON summary when you hang up.
+
+| | |
+| --- | --- |
+| **Live app** | _add your deployed URL_ |
+| **Demo video** | _add your video link_ |
+| **Author** | Aditya Acharya · [LinkedIn](https://www.linkedin.com/in/adityaacharyax/) |
+
+> **Approach, in three sentences.** Aria is a modular voice pipeline in one Next.js app: browser speech recognition feeds a Gemini agent that uses native function calling, and every tool call passes through a server-side policy engine that decides order access, cancellations and returns in code and words its refusals verbatim. Replies are spoken with Microsoft's natural Indian voices (free, via the service behind Edge's Read Aloud, with Sarvam and the browser's voice as fallbacks), plain status questions are answered from the verified order record without a model call, and each call ends with a JSON summary whose facts come from the verified tool log. A live trace on the page shows every tool call, guardrail and latency, so you can see exactly why Aria said what she said.
+
+---
+
+## Try it
+
+Open the app in **Chrome or Edge**, allow the microphone, press **Start call**, and try:
+
+| Say… | What happens |
+| --- | --- |
+| "Where is my order O R D one oh one?" | `get_order_details` → out for delivery with BlueDart (BD-982103), expected by 6 PM today. Answered from the order record with no model call (tagged *instant*). |
+| "Can I return ORD-102?" | `check_return_eligibility` → declined: delivered 14 days ago, outside the 7-day window. Spoken verbatim. |
+| "Please cancel ORD-103." → "Yes" | `cancel_order` checks policy, asks *"Shall I go ahead?"*, and only cancels after a clear yes. The order card updates live. |
+| "Cancel ORD-101." | Refused (already out for delivery); suggests refusing it at the doorstep. |
+| "I bought this 20 days ago and opened it. Can I return it?" | Declined straight from policy; no order ID is needed. |
+| "Where is ORD-999?" | "I couldn't find an order with that ID…": no hallucinated order. |
+| "Can you book me a flight to Goa?" | Politely declined and steered back to Aura. |
+| "Mera order ORD-101 kab tak aayega?" | Understood as Hinglish and answered in Hindi (Devanagari, so the Hindi voice reads it naturally). |
+| "My ORD-106 toner arrived broken." | Within 48 hours of delivery, so it qualifies for a replacement once there are photos. |
+| "Can I pay cash on delivery for ORD-107?" | No: ₹3,200 is above the ₹2,500 Cash on Delivery limit. |
+| "Can I talk to a real person?" | `escalate_to_human` → care-team reference like `AUR-4821`. |
+| "That's all, thanks, bye." | Aria says goodbye and ends the call herself. |
+| *(say nothing for a while)* | After 12 s Aria asks if you're still there; after 10 s more she says goodbye and hangs up. |
+
+No microphone? Tap a suggestion card, an order's *Track / Return / Cancel*, or the ✦ scenarios menu, or just type. That starts a text chat, and Aria still speaks her replies. Everything above also works in the keyless **rule-based demo** mode (labelled in the header), which runs the same tools and guardrails without an LLM.
+
+**What's on the page**
+
+- **The orb**: a WebGL fluid sphere whose colour follows Aria's state (sage idle, emerald listening, amber thinking, violet speaking) and whose surface moves with the real audio: your mic while she listens, her own voice while she speaks. Below it, the live state (*Listening / Thinking / Speaking*) with detail such as "Looking up ORD-101", the call timer and the controls: start/end, mute, interrupt, and voice settings.
+- **Conversation**: replies drift in word by word, with response time, the tools used, a `policy` tag on server-decided replies and an `instant` tag on replies answered from the order record without a model call.
+- **Test orders**: the current brand's sample orders. For Aura, the brief's three (ORD-101 to ORD-103) first, then five extras that reach the remaining policy paths: ORD-104 shipped (can't cancel, can't return yet), ORD-105 delivered 3 days ago (return window open), ORD-106 delivered yesterday (damage within 48 hours), ORD-107 at ₹3,200 (above the Cash on Delivery limit) and ORD-108 delivered exactly 7 days ago (last day to return). Each shows customer, courier, tracking and notes, plus one-tap questions. Status updates live when you cancel. Veda Haircare has its own five (ORD-201 to ORD-205), placed where its policies differ from Aura's.
+- **Trace** (header): a drawer with the live agent trace. It shows what Aria heard, each tool call and result, guardrails that fired, model rounds and time to first audio.
+- **Call summary**: opens when you hang up, with intent, order, resolution and sentiment, the issues handled and actions taken, and highlighted JSON with copy and download.
+- **How it works** (header): the pipeline, guardrails and the current brand's policies at a glance.
+- **Brand picker** (the wordmark in the header): switch between Aura Skincare and Veda Haircare between calls.
+
+---
+
+## Brief → implementation
+
+| Requirement | How Aria does it |
+| --- | --- |
+| Natural voice conversation, Indian persona | Web Speech API recognition in `en-IN` (or the chosen Indian language) → Gemini 3.5 Flash-Lite → Microsoft's natural Indian voices (Neerja for English, Swara for Hindi, and so on) served by the app in every browser. Sarvam, then the browser's own voice, are fallbacks. |
+| Context, no repetition, concise | Full transcript each turn plus a *call state* note (IDs mentioned, pending confirmation, cancellations). The prompt enforces 1–2 spoken sentences. |
+| Reasonable response speed | Plain status questions skip the model entirely, policy decisions skip the second model round, a "let me check" clip covers the tool round-trip, voice connections are kept warm, and end-of-speech timing adapts. Measured on the page per turn. |
+| Brand knowledge & policies | The brand's facts and policies (the brief's, for Aura) are the only knowledge in the prompt. Eligibility is **computed on the server**, not by the model. |
+| Out-of-scope requests | Declined in one sentence and redirected; recorded as `OUT_OF_SCOPE / POLICY_DECLINED`. |
+| Graceful degradation | Unknown IDs → "couldn't find it, please repeat"; missing IDs → asked for; unclear speech → asked to repeat; voice provider failures → the next voice in the chain (Edge → Sarvam → browser); a silent caller → a check-in, then a polite goodbye; Firefox → server transcription. |
+| `get_order_details(order_id)` | Implemented, plus `cancel_order`, `check_return_eligibility` and `escalate_to_human`. |
+| Post-call transcript + JSON | Chronological transcript (downloadable) and a JSON record (`customer_intent`, `order_id`, `resolution_status`, `call_summary` plus issues, actions, sentiment, metrics). |
+| Testing interface | Start/End, live state indicator, test-orders helper, scenario chips, call log and summary. |
+| Optional extras | See [Beyond the basics](#beyond-the-basics-section-8) below. |
+
+## Beyond the basics (section 8)
+
+Each optional item, and the decision behind it:
+
+| Item | What Aria does | Why this way |
+| --- | --- | --- |
+| **Barge-in** | Talk over Aria and she stops within a few hundred milliseconds, then listens. | The detector compares your mic level with Aria's *current* output level, so her own voice leaking from laptop speakers doesn't cut her off. |
+| **Hinglish** | "Mera order ORD-101 kab tak aayega?" is understood and answered in Hindi, in Devanagari so the voice pronounces it properly. | The reply language is decided in code from what the caller wrote (English stays English even with Hindi selected), not left to the model. |
+| **Multiple tools** | `get_order_details`, `cancel_order`, `check_return_eligibility`, `escalate_to_human`. | Each policy decision lives in its own tool, so it is computed and worded by the server rather than the model. |
+| **Ambiguous requests** | No ID: Aria asks for it. Several orders discussed, then "cancel it": she asks which one. An ID the caller never said: the tool call is blocked. IDs spoken as words or in Indian digits ("ഒന്ന് പൂജ്യം ഏഴ്", "൧൦൭") are understood. | Asking costs one short turn; guessing the wrong order costs a wrong cancellation. Cancelling also needs an explicit yes to a question that names the order. |
+| **Improved call experience** | Live state orb, trace drawer, instant filler while looking things up, natural Indian voices in 9 languages, a check-in when the caller goes quiet (12 s), then a polite goodbye (10 s later). | A phone agent doesn't hold a silent line forever, and the caller shouldn't hear dead air while a lookup runs. |
+| **Multi-brand** | **Aura Skincare** and **Veda Haircare** run on one agent: pick one in the header or share `/?brand=veda`. Each brand has its own facts, policy numbers, orders, greetings (in all 10 languages) and care-team reference prefix. | Real support platforms serve many brands, so policy is data, not code: the same engine gives Veda's 10-day returns, 72-hour damage window and ₹5,000 COD limit. A call is bound to its brand in the signed session, so it can't see or act on another brand's orders. |
+| **Very low latency** | A plain "Where is ORD-101?" is answered from the verified record with **no model call** (tagged *instant*): about 0.1 s to the reply plus ~0.4 s of voice, instead of 2–5 s. Voice connections are kept open and re-warmed when a call starts. | The most common call needs no judgement. Anything with a complaint, a second question or a request ("it's late", "and can I pay cash?") still goes to the model. |
+
+**Try multi-brand:** switch to Veda in the header and ask *"Can I return ORD-202?"* (delivered 9 days ago): Veda's 10-day window allows it, where Aura's 7-day window would not. *"Is Cash on Delivery available for ORD-204?"* (₹4,200) is yes at Veda, no at Aura.
+
+**Considered and left out:** identity checks before sharing order details (a real deployment needs them, but they would get in the way of evaluating the brief's scenarios), and streaming the model's reply sentence by sentence (replies are one or two sentences, so it would save little once the common case skips the model entirely).
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Browser
+    MIC([Microphone]) --> STT["Web Speech API (en-IN)"]
+    MIC -. fallback .-> REC["MediaRecorder + VAD"]
+    STT --> ENGINE["useVoiceCall<br/>call engine"]
+    REC --> ENGINE
+    ENGINE --> PLAYER["VoicePlayer<br/>Web Audio"]
+    PLAYER --> SPK([Speaker])
+  end
+  subgraph Server["Next.js API routes"]
+    CHAT["/api/chat<br/>NDJSON event stream"] --> AGENT["Agent loop"]
+    AGENT --> TOOLS["Tools + policy engine"]
+    TOOLS --> DB[("Sample orders")]
+    SUMMARY["/api/summary"]
+    TTS["/api/tts-stream"]
+    TRANSCRIBE["/api/transcribe"]
+  end
+  ENGINE -- "transcript + signed session" --> CHAT
+  AGENT <--> LLM["Gemini 3.5 Flash-Lite<br/>function calling"]
+  REC --> TRANSCRIBE --> GSTT["Gemini"]
+  PLAYER --> TTS --> VOICES["Edge natural voices (MP3)<br/>→ Sarvam → browser voice"]
+  ENGINE --> SUMMARY --> LLM
+```
+
+### One turn, end to end
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Customer
+  participant B as Browser
+  participant S as /api/chat
+  participant G as Gemini
+  participant T as Tools
+  C->>B: "ORD one oh one still isn't here, where is it?"
+  Note over B: final transcript + 350 ms end-of-speech wait
+  B->>S: transcript + signed session
+  S->>G: system prompt + call state + tools
+  G-->>S: functionCall get_order_details("ORD-101")
+  S-->>B: event: tool_call
+  B-->>C: "Sure, let me check that for you." (clip loaded at call start)
+  S->>T: provenance check, then lookup
+  T-->>S: Out for Delivery · BlueDart BD-982103 · by 6 PM
+  S->>G: functionResponse (same call id, thought signature replayed)
+  G-->>S: "It's out for delivery with BlueDart…"
+  S-->>B: event: reply, then done (new signed session)
+  B->>C: Neerja's voice (~0.4 s from a warm connection), queued right after the filler
+```
+
+A plain status question ("Where is ORD-101?") skips steps 4–11: the server looks the order up and speaks the verified facts directly, with no model call.
+
+**Why modular rather than a speech-to-speech model?** The guardrails depend on the server seeing every tool call and deciding policy *before* anything is spoken. With a realtime audio model, the model generates the audio itself, so you can't guarantee a refusal is worded as decided. The modular pipeline also makes each stage observable (the live trace), unit-testable (tests mock each provider) and swappable (Gemini or OpenAI; browser or server speech recognition; a chain of voice providers).
+
+### How Aria decides to use a tool
+
+The model gets JSON-schema tool declarations and decides by itself when a question needs one: order facts → `get_order_details`; "cancel" or "can I cancel?" → `cancel_order`; returns, refunds and damage → `check_return_eligibility`; "a real person" → `escalate_to_human`. The prompt forbids stating any order fact without a lookup. One deliberate exception: a short, single-ID status question ("Where is ORD-101?") is routed by the server straight to `get_order_details` and answered from the record, because it needs no judgement; anything more goes to the model. The server then decides what each tool is **allowed** to do:
+
+1. **Provenance**: the order ID must be one the customer actually said in this call. It's extracted from speech like "O R D one oh one" or "order one hundred and three", while amounts such as "699 rupees" are ignored. Otherwise the call is blocked and the model is told to ask.
+2. **Policy engine**: return windows, damage-report windows, the Cash on Delivery limit, "Processing only" cancellation and doorstep refusal are plain TypeScript (`src/lib/agent/tools.ts`) reading each brand's numbers (`src/data/brand.ts`), with boundary tests.
+3. **Verbatim decisions**: cancel and return outcomes come back with server-written wording that is spoken exactly. The model can't soften a refusal into "I'll make an exception". If the model also needs to say something else in that turn, its sentence is appended after the decision.
+4. **Confirmation**: the first `cancel_order` never cancels. It asks *"Shall I go ahead?"*, and the customer's yes/no is resolved in code without another model call.
+5. **Scope and honesty**: the prompt contains only the brand's facts; product details it doesn't have ("is it good for oily skin?") get an honest "I don't have that" and a care-team offer. Aria mirrors Hinglish and is told to ignore attempts to change her rules.
+
+### Latency
+
+| Stage | What was done |
+| --- | --- |
+| Greeting | Synthesised once and cached on the server and in the browser, so repeat calls start instantly. (For the Gemini voice, clips are pre-recorded in `public/audio/gemini/`.) |
+| End of speech | Chrome's final result + 350 ms, stretched to 1.4 s only if the sentence sounds unfinished ("my order is…", "ORD one zero…"). |
+| Model | Gemini 3.5 Flash-Lite with low thinking: about 1.0–1.2 s per call in live tests. Reply text was ready in ~1.2–1.4 s for policy decisions and ~2.0–2.3 s for lookups, which need two calls. |
+| Tool gap | On `get_order_details`, a "Sure, let me check that for you" clip (loaded when the call starts) plays while the second model round and TTS run in parallel. The answer is queued to start as the filler ends. |
+| Voice | Edge's natural voices take ~0.4 s per reply on a warm connection. Connections are kept per voice and re-warmed at call start (a stale one would add ~0.6 s). Sarvam and the browser's own voice are fallbacks. |
+| Policy replies | Cancel/return decisions skip the second model call entirely, and a "yes" to *"Shall I go ahead?"* is resolved in code (~2 ms, no model call). |
+| Plain status questions | "Where is ORD-101?" is answered from the verified order record with no model call at all (~0.1 s instead of 2–5 s). |
+
+Every Aria message shows its measured time from the end of your turn to her first word, and the trace breaks it down.
+
+### Aria's voice and Indian languages
+
+Aria speaks with **Microsoft's natural Indian voices** in every browser, for free: the server calls the service behind Edge's Read Aloud (`msedge-tts`), which needs no key and has no published quota. The voice is chosen from each reply's script: Neerja for English, Swara for Hindi, Shruti for Telugu, Pallavi for Tamil, Tanishaa, Aarohi, Dhwani, Sapna and Sobhana for Bengali, Marathi, Gujarati, Kannada and Malayalam. One connection per voice is kept open, since opening one costs more than speaking a sentence (~0.4 s per sentence once warm), and it is opened when the page loads.
+
+That service is unofficial, so it is only the first link in a chain: if it fails, **Sarvam** answers (and covers Punjabi and Odia, which Microsoft lacks), and if every server voice fails the **browser's own voices** take over. The browser layer picks the best installed voice *per language* (`src/lib/voice/browserVoices.ts`), preferring neural ("Natural" / "Online") voices, then Google's, then anything else, and a female voice for Aria.
+
+- **Language setting** (⚙ next to the call button): English, Hindi, Tamil, Telugu, Bengali, Marathi, Gujarati, Kannada, Malayalam or Punjabi. It sets speech recognition (`hi-IN`, `ta-IN`…) and the greeting language. The panel shows the natural voice Aria will use (e.g. "Natural voice: Shruti").
+- **The reply language follows the caller**, decided in code from their latest message: typing English with Telugu selected gets English back, Telugu script gets Telugu, and Hinglish gets Hindi.
+- **Replies in the caller's script.** The prompt tells the model to answer Hindi (including Hinglish) in Devanagari, Tamil in Tamil script, and so on. A voice can only pronounce a language properly from its native script; romanised Hindi read by an English voice sounds wrong.
+- **The voice is picked from the reply's script** on the server (Devanagari → Swara, Telugu → Shruti…); order IDs like `ORD-101` are read by the same voice. In the browser fallback, mixed replies are split by script and long ones cut into sentences, because Chrome stops long utterances.
+- **Policy decisions stay faithful.** The server words cancel/return decisions in English. For a caller in another language they are translated by the model, and the translation is used only if every order ID and number survived; otherwise the English original is spoken. The trace shows which happened.
+- **Only the fallback depends on the device.** If every server voice fails, the browser's voices are used: Edge on Windows has natural Indian voices for all of these languages, Chrome far fewer. If a language has no voice then, Aria says so once instead of reading it with an English voice, and suggests Edge.
+
+**The voice chain** (`src/lib/voice/tts.ts`). Edge is on by default; the keyed providers join behind it with `ENABLE_PREMIUM_VOICE=1`. Each line goes only to providers that speak its language, and a provider that runs out of quota is skipped for 10 minutes:
+
+| Provider | Why | Free allowance |
+| --- | --- | --- |
+| **Edge Read Aloud** (Neerja, Swara, Shruti, Pallavi…) | Microsoft's natural voices for 9 Indian languages, no key | No published limit (unofficial) |
+| **Azure AI Speech** (the same voices as Edge, plus Ananya and Kavya) | The official, supported route to Microsoft's voices | 500,000 characters / month (F0) |
+| **Sarvam Bulbul v3** (Priya, Simran, Ishita) | Indian voices for 11 languages, built for Hinglish | ₹100 credit on sign-up, then ₹30 per 10,000 characters |
+| **OpenAI `gpt-4o-mini-tts`** | Accent instructions travel separately and are never read aloud | Paid (inexpensive) |
+| **Gemini TTS** | Same key as the conversation | About 10 requests per model per day |
+
+**Why the audio is click-free.** Starting or stopping a waveform mid-cycle produces an audible pop, and a streamed chunk that arrives late leaves a gap that crackles. Every sound therefore plays through a gain envelope: a 12 ms fade in, and a 35 ms fade out when Aria is interrupted or the call ends. Edge's MP3 is decoded whole (it arrives in ~0.4 s); streamed PCM from the other providers waits for 300 ms of audio before starting, and any chunk that arrives after a gap fades in instead of jumping in. Barge-in compares your mic level against Aria's *current* output level, so her own voice through the speakers can't cut her off.
+
+**A TTS gotcha worth knowing** (from when Gemini TTS was Aria's voice; it's still in the chain). The Gemini 3.x TTS models read *everything* in the prompt aloud. A style direction like "Speak as Aria, a warm Indian English specialist: …" became part of the audio, turning an 8-word line into a 16-second clip; I confirmed this by transcribing the output. Aria therefore sends 3.x models only the line itself, plus an `en-IN` locale. The older `gemini-2.5-flash-preview-tts` does follow a spoken accent direction, and a judge model rated its output as an Indian accent, but it took ~5 s before any audio arrived. So it's available via `GEMINI_TTS_MODEL` for anyone who prefers a stronger accent over speed.
+
+### State, privacy and safety
+
+- **Stateless server, isolated calls.** Per-call state (cancellations, verified outcomes, pending confirmation) travels in an HMAC-SHA256-signed token. The browser can't forge a cancellation, calls never affect each other, fixtures are never mutated, and it works across serverless instances. Tokens expire after an hour.
+- **Keys stay on the server.** The browser only talks to this app's API routes. Inputs are validated with zod and size-limited, and each IP has hourly per-endpoint limits so a public demo link can't run up costs.
+- **Audio.** The microphone is only open during a call. Server transcription processes audio in memory and stores nothing. Note that Chrome's built-in recognition uses Google's speech service.
+
+### Post-call JSON
+
+```json
+{
+  "brand": "Aura Skincare",
+  "customer_intent": "ORDER_TRACKING",
+  "order_id": "ORD-101",
+  "resolution_status": "RESOLVED",
+  "call_summary": "Customer asked about the delivery status of ORD-101. Aria confirmed it is out for delivery with BlueDart (BD-982103) and expected by 6 PM today.",
+  "customer_sentiment": "POSITIVE",
+  "follow_up_required": false,
+  "issues": [{ "intent": "ORDER_TRACKING", "order_id": "ORD-101", "resolution": "RESOLVED" }],
+  "actions_taken": [],
+  "order_ids": ["ORD-101"],
+  "metrics": { "customer_turns": 2, "tool_calls": 1, "duration_seconds": 41, "avg_response_ms": 1830 },
+  "generated_by": "gemini-3.5-flash-lite"
+}
+```
+
+Gemini writes the narrative and classification (`customer_intent`, `resolution_status`, `call_summary`, sentiment) using structured output with a JSON schema. The order ID, issues, actions and metrics always come from the signed tool log. Model output is schema-validated and rejected if it mentions an order that wasn't discussed. On any failure, a rule-based summary built from the same log is returned (`generated_by: "rules"`).
+
+---
+
+## Project structure
+
+```
+src/
+  app/
+    page.tsx, layout.tsx, globals.css      UI shell, fonts, design tokens (light + dark)
+    api/chat/route.ts                      one turn → NDJSON events (tool calls, guardrails, reply, session)
+    api/summary/route.ts                   post-call JSON (Gemini + verified facts, rules fallback)
+    api/tts-stream/route.ts, api/tts/route.ts   Aria's voice from the provider chain (MP3 or PCM); GET warms a voice at call start
+    api/transcribe/route.ts                server speech-to-text fallback
+    api/config/route.ts                    which engines are available (never exposes keys)
+  lib/agent/
+    agent.ts        turn loop: confirmation and plain-status fast paths → model/tool rounds → verified outcome
+    tools.ts        tool schemas + policy engine (the only place decisions are made)
+    providers.ts    Gemini / OpenAI adapters (function calling, structured JSON)
+    prompt.ts       Aria's system prompt (per brand) + per-turn call state and reply language
+    rules.ts        keyless rule-based mode using the same tools
+    intents.ts      intent, yes/no and goodbye detection (English + Hinglish)
+  lib/orders/orderIds.ts   spoken/typed order-ID extraction (English and Indian digits and number words)
+  lib/voice/               tts.ts (Edge → Azure → Sarvam → OpenAI → Gemini chain), languages, player (fades + jitter buffer), recognition, VAD
+  lib/summary.ts, session.ts, rateLimit.ts, validation.ts, audio.ts
+  hooks/useVoiceCall.ts    the browser call engine
+  components/              WebGL orb, stage, conversation, test orders, trace drawer, summary sheet, how-it-works (Motion animations)
+  data/brand.ts, orders.ts brands (facts, policy numbers, greetings) and their sample orders
+public/audio/gemini/       pre-recorded greeting and filler clips for the Gemini voices
+scripts/                   generate-voice-clips.ts, check-gemini.ts (live smoke test)
+tests/                     79 tests: order IDs, policy tools, brands, agent loop (mocked Gemini), summary, routes, TTS providers, languages, voice
+```
 
 ## Run locally
 
-Requires Node.js 20.9 or newer.
+Requires Node.js 22 (20.9+ also works).
 
 ```sh
 npm install
-cp .env.example .env.local
-npm run dev
+cp .env.example .env.local      # PowerShell: Copy-Item .env.example .env.local
+npm run dev                     # http://localhost:3000
 ```
 
-On PowerShell, use `Copy-Item .env.example .env.local`. Open http://localhost:3000. Allow microphone access and click **Start call**. Chrome and Edge can use local browser recognition; if it is unavailable, Aria can capture a short utterance for Gemini transcription. Select “Gemini · clearer speech” in Microphone settings to use that path explicitly. A text call works without microphone permission.
-
-Without an API key, the page explicitly displays **Rule-based demo**. This mode supports the evaluation scenarios and short follow-ups, but is not a general conversational language model. Set `GEMINI_API_KEY` in `.env.local` and restart to enable natural conversation using `gemini-3.5-flash-lite`. The default premium voice is Gemini's Aoede; Sulafat and Leda are selectable, each with an audition button. Gemini 3.8 Flash-Lite TTS streams 24 kHz audio through the server for earlier playback; the unary WAV endpoint remains as a fallback. A warm female voice and Indian English cadence are requested; accent quality varies by model output. If Gemini is absent, `OPENAI_API_KEY` enables the previous OpenAI conversation/voice path. Provider failures are displayed, and premium voice errors fall back to a preferred female browser voice. Keys never enter the client bundle.
-
-## Try these scenarios
-
-1. “Where is my order O R D one zero one?” → ORD-101, BlueDart BD-982103, out for delivery, expected by 6 PM.
-2. “Can I return ORD-102?” → declined: delivered 14 days ago, outside the 7-day window.
-3. “Please cancel ORD-103.” → changes to Cancelled for this call. Ask for its status again to verify. A new call restores the fixture.
-4. “Cancel ORD-101.” → refused; doorstep refusal offered.
-5. “Where is ORD-999?” → ID clarification, no invented order.
-6. “Cancel my order.” then “one zero three” → asks for ID and remembers the request.
-7. “Can you book a flight?” → redirects to Aura support.
-8. “Is COD available?” → up to ₹2,500, cash or UPI at the doorstep.
-9. End call → chronological transcript remains visible, downloadable text and copyable JSON appear.
-
-## Architecture and policy decisions
-
-Microphone → browser SpeechRecognition (`en-IN`) or Gemini transcription → `/api/chat` → Gemini native function calling (or OpenAI or explicit deterministic demo) → server policy tools → Gemini streaming PCM, unary TTS WAV, OpenAI TTS, or browser synthesis → speaker.
-
-The three fixtures are in `src/data/orders.ts`. Policy tools check the stored order status and delivery age, rather than allowing the model to decide eligibility. Cancellation and return tool responses are returned directly for speech, so a model cannot rewrite those refusals as an approval. Unknown return facts remain unknown; eligibility requires unopened, unused, original packaging. Damage has a separate 48-hour window and photo requirement. No refund, replacement, or pickup action is implemented or claimed.
-
-Per-call cancellations and chronological tool outcomes live in an HMAC-signed session token. The immutable order fixtures are never mutated by cancellation. This isolates evaluator calls and works across stateless instances when `SESSION_SECRET` is shared. Tokens expire after an hour. General AI policy turns without a tool are conservatively marked `NEEDS_INFORMATION`, because the backend has no independent proof of resolution; out-of-scope requests are marked `POLICY_DECLINED`. Multiple intents are labelled `MULTIPLE_INTENTS`; a single `order_id` is null if multiple orders were discussed. The final relevant outcome determines resolution; the summary text includes earlier outcomes too.
-
-The source policy says “above ₹499” and “below ₹499”; exactly ₹499 is undefined. Aria acknowledges this gap. Order dates/relative ages are fixed evaluation fixtures, not an actual live courier feed. No real orders, money, or personal data are changed.
-
-## Voice lifecycle and limitations
-
-Recognition pauses while the agent speaks to prevent speaker echo from becoming another customer turn. A microphone level detector can interrupt Aria after sustained speech; the “Let me interrupt Aria” switch allows disabling it if loudspeakers cause false triggers. **Interrupt & speak** and typed input are also available. If browser recognition is missing or fails and Gemini is configured, the browser records one short utterance until speech stops, sends it to `/api/transcribe`, then deletes the recording after processing. “Gemini · clearer speech” selects this path directly. Automatic interruption relies on the browser's echo cancellation; headphones are recommended in noisy settings. Browser recognition may send audio to the browser vendor's speech service and may require network access. Recordings sent to Gemini are not stored by this application.
-
-Microphone tracks, playback, pending requests, recognition restart timers, and audio context are cleaned up on call end or unmount. Generation counters prevent late network or speech callbacks from updating a later call. The transcript contains the generated response, with interrupted audio marked; it is not a word-by-word record of audio actually heard. Waveform uses measured mic frequencies while listening and an illustrative animation during speech. Calls are bounded to 60 customer turns.
-
-## Validation
+Add `GEMINI_API_KEY` to `.env.local` for the full AI experience. Without any key, the app runs in the labelled rule-based demo mode. Microphone access works on `localhost` and HTTPS only.
 
 ```sh
-npm test
+npm test            # unit + route tests (no network: providers are mocked)
 npm run typecheck
 npm run build
-npm audit
+npx tsx scripts/check-gemini.ts          # optional live check against Gemini (uses a little quota)
+npx tsx scripts/generate-voice-clips.ts  # re-record the Gemini greeting/filler clips (with EDGE_TTS=0)
 ```
 
-Tests exercise policy boundaries, rejection of session tampering/expiration, cancellation isolation/idempotency, spoken ID normalization, ambiguous shipping fee, invalid IDs, context, scope, Gemini tool calls, WAV conversion, streamed PCM, transcription route, voice activity detection, voice selection and summaries. Build/type checks validate the application. A replacement key was verified live with Gemini conversation, transcription, unary WAV and streamed PCM responses; the key remains only in ignored `.env.local`. Actual microphone and speaker quality still need a human browser test. The dependency override updates the PostCSS version bundled by Next.js 15.
+## Deploy (Vercel)
 
-## Deployment
+1. Push this repository to GitHub and import it in Vercel. The Next.js defaults work; `vercel.json` runs the functions in Mumbai (`bom1`), next to Indian callers, and `package.json` pins Node 22.
+2. In **Settings → Environment Variables**, add:
 
-Import this Next.js project into Vercel, configure `GEMINI_API_KEY` and a long random `SESSION_SECRET`, then deploy. HTTPS is required for microphone access outside localhost. `SESSION_SECRET` must match across instances/redeployments while calls are active. A simple per-instance hourly rate limit bounds casual demo use. For a sustained public deployment, add authentication, shared rate limiting and spend controls; this assessment implementation has no production access control.
+   | Variable | Needed | Value |
+   | --- | --- | --- |
+   | `GEMINI_API_KEY` | Yes | Your Gemini key (without it the app runs in the rule-based demo mode). |
+   | `SESSION_SECRET` | Recommended | A long random string, e.g. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Without it a secret is derived from the Gemini key, so it works, but a dedicated secret can be rotated on its own. |
+   | `SARVAM_API_KEY` + `ENABLE_PREMIUM_VOICE=1` | Optional | Backup voice if Edge's service fails, and the voice for Punjabi. Set `SARVAM_TTS_MODEL=bulbul:v3`. |
 
-Deployment and GitHub publication are not completed by local implementation. The original confidential assessment PDF should not be committed to a public repository. Keep the source, README, lockfile and `.env.example`; never publish `.env.local` or generated files in `output/`.
+   The Edge voices need nothing. Every other setting has a working default (see `.env.example`).
+3. Deploy, then open the HTTPS URL (microphones only work over HTTPS) and allow the microphone. Add `/?brand=veda` for Veda Haircare.
 
-## Section 9 · Engineering perspective
+**Serverless notes.** Every call's state travels in a signed token, so any instance can serve any turn. Voice connections are kept per instance and re-warmed at call start with `after()`; one that died while the function was frozen gets 3 s before a fresh connection takes over. Rate limits and the clip cache are per instance, which is fine at demo scale (see *1,000 conversations a day* below for what changes in production).
 
-**1. Why this architecture and stack?** Next.js puts the UI and protected API routes in one deployable app. A modular STT → reasoning/tools → TTS pipeline makes tool execution observable and testable, keeps credentials on the server, and allows a low-cost browser audio path. TypeScript shares the order/transcript contracts. Gemini function calling provides natural language interpretation while deterministic server functions enforce actions.
+## Known limitations
 
-**2. Most difficult challenge and solution?** Coordinating async speech, recognition restarts, requests and call teardown is the difficult part. State refs and generation counters guard callbacks; recognition is paused during playback, and cleanup closes the microphone and cancels late work. Keeping action decisions outside model-generated prose also avoids turning a policy refusal into a promised refund. These are design and implementation challenges; real acoustic performance remains to be validated with a human caller.
+- **Speakers vs headphones.** Barge-in calibrates against Aria's own echo, but laptop speakers in a loud room can still trigger it. The *Interrupt Aria by speaking* switch turns it off, and headphones are best.
+- **Browser support.** Live recognition needs Chrome, Edge or Safari. Firefox uses Gemini transcription, which is slower because it records a whole utterance.
+- **The free voice service is unofficial.** Edge's Read Aloud service has no published quota or guarantee. If it fails, Sarvam (with a key) and then the browser's own voices take over, and those vary by device: Edge is best; on a Mac, add Indian voices in System Settings → Accessibility → Spoken Content. Azure AI Speech is the official route to the same voices.
+- **Translated decisions.** Cancel and return decisions for non-English callers are model translations of the server's wording, checked for order IDs and numbers but not for nuance.
+- **Demo scope.** Orders are fixtures with relative dates ("delivered 14 days ago"). There is no caller identity verification, and rate limits are per server instance.
 
-**3. One more week?** First validate voice latency and recognition with real Indian English/Hinglish callers. Add server transcription or a WebRTC realtime engine, reliable automatic barge-in, and latency instrumentation. Then add provider-backed integration tests and a persistent authenticated order service. These improve call reliability more than adding more UI features.
+---
 
-**4. 1,000 conversations per day?** Replace demo tokens with authenticated session storage and persistent order transactions, including idempotency and concurrency control. Add shared rate limits, quotas, provider failover, traces for each STT/model/tool/TTS stage, privacy-aware transcript retention, and operational dashboards for latency/failure/containment rates. Scale stateless workers by concurrent calls, not daily totals; test burst load and provider limits. If adding telephony, use a SIP/telephony integration and plan for reconnects, handoffs, human escalation and recording consent.
+## Section 9 · How I think about it
 
-## Demo and submission
+**1. Why this architecture and stack?**
+I wanted the safety of the agent to be provable, not just prompted. A modular pipeline (speech recognition → LLM with tools → TTS) lets the server see every tool call and decide policy in code before anything is spoken. That's why refusals are spoken exactly as the policy engine words them, and why a cancellation needs a confirmed "yes" that's checked in code. A realtime speech-to-speech model would feel slightly faster, but I'd lose that guarantee and most of the observability. Next.js keeps the UI and the protected API routes in one deployable app. Gemini covers function calling, structured output and transcription with one key, and Flash-Lite is fast (about 1.1 s per call when I measured it). For the voice I ended up on Microsoft's natural Indian voices: they cover all ten call languages, sound native, and are free through Edge's Read Aloud service, with fallbacks because that service is unofficial. The browser's `en-IN` speech recognition is free and instant, and a signed session token keeps the server stateless and each evaluator's call isolated.
 
-The exact 3–5 minute recording walkthrough is in [DEMO.md](DEMO.md).
+**2. What was the most difficult part, and how did I solve it?**
+Making it feel like a conversation instead of a walkie-talkie without weakening the guardrails. The hard parts were all about timing. I had to decide when the caller has actually finished: people pause mid-ID ("ORD… one zero one"), so the wait adapts when a sentence sounds unfinished. I had to let callers interrupt without Aria interrupting herself through the speakers, so the detector first measures her own echo level and then needs sustained speech above it. The two-round tool call left a gap, so a "let me check" clip covers it while the answer's audio is already streaming, gated to start as the filler ends. And async callbacks from recognizers, audio and network could land after a call had moved on, so generation counters make stale callbacks harmless. A subtler bug came from my own guardrail: the "only IDs the customer said" check initially blocked correct lookups when someone said "one oh one" or mentioned two orders. I rebuilt order-ID extraction as a small tokenizer that handles spoken digits and ignores amounts, with tests for each case. The sneakiest problem was the voice itself. Newer Gemini TTS models read the style direction aloud along with the reply. I only caught it by measuring clip lengths and transcribing the generated audio, and fixed it by sending just the line plus an `en-IN` locale. Its free tier (about 10 requests a day) then pushed me to Microsoft's voices, where the lesson was latency: opening a connection cost more than speaking a sentence, so connections are kept warm and re-warmed when a call starts.
 
-**Approach note:** Aria uses a modular browser voice pipeline with server-side order tools and explicit policy checks. A simple care-focused interface exposes sample orders, live conversation state, and post-call outcomes, while signed per-call state keeps demo actions isolated.
+**3. With one more week, what would I improve first, and why?**
+Real-caller testing, because that's where voice agents actually fail. I'd run sessions with Indian English and Hinglish speakers on laptop speakers, in noisy rooms and on phones, record per-stage latency percentiles, and tune end-of-speech timing and barge-in thresholds from that data rather than my own voice. Next, I'd move the voice to the official Azure route to the same voices, so it doesn't rest on an unofficial service. Then I'd prototype Gemini Live (native audio) behind the same tool server, keeping policy decisions server-side and checking the spoken transcript against tool results, to see if the latency win is worth the trade-off. I'd also add caller verification (phone number or OTP) before reading out order details, since right now anyone who knows an order ID hears the customer's name.
 
-Submission still requires your public app URL, GitHub repository URL, and recorded demo URL. LinkedIn: [Aditya Acharya](https://www.linkedin.com/in/adityaacharyax/). See the supplied assessment for recipients and subject; no email has been sent.
+**4. What changes at 1,000 conversations a day?**
+1,000 calls a day is only a handful at once, so the challenge is reliability, quality and cost rather than throughput.
+
+- **Real systems:** an authenticated order-management API instead of fixtures; idempotent, audited actions; escalations filed as real tickets with the JSON summary attached; caller identity checks.
+- **State and limits:** server-side sessions (e.g. Redis) instead of client-carried tokens; shared rate limits; quotas and spend alerts.
+- **Observability:** per-stage traces (STT, model, each tool, TTS) with p50/p95 latency. Dashboards for containment, escalation, policy-decline and tool-error rates, plus sentiment trends from the summaries.
+- **Quality gates:** a regression suite of scripted and recorded conversations, especially the guardrail cases, run on every prompt or model change; weekly human review of sampled transcripts.
+- **Resilience and cost:** provider failover (the chat adapter already supports Gemini and OpenAI, and the voice already fails over Edge → Sarvam → browser), an official voice contract (Azure), TTS caching for common phrases, and prompt caching.
+- **Compliance:** PII redaction and a retention policy for transcripts, plus explicit recording consent.
+- **Phone calls:** a SIP/telephony provider (e.g. Exotel or Twilio in India) streaming audio to server-side STT and TTS, with warm handoff to a human queue that receives the summary so the customer never repeats themselves.

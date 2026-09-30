@@ -1,16 +1,22 @@
-# Aria demo recording guide (3–5 minutes)
+# Demo video script (about 4½ minutes)
 
-Record the deployed HTTPS app in Chrome or Edge with microphone permission enabled. Use headphones to reduce speaker echo. Keep the live transcript, browser address, and post-call JSON visible in the recording. Sample orders are fictional and reset for each call.
+Record the **deployed HTTPS app** in Chrome or Edge with headphones. Aria's natural Indian voices (Neerja for English, Swara for Hindi, Shruti for Telugu) come from the server, so every browser sounds the same; the trace shows "Edge Neural · Neerja" on each reply. Keep the browser address bar visible. Before recording, check that the header shows the Gemini model (not "Rule-based demo"), and use the ⚙ settings next to the call button to check the language and hear the voice. Open **Trace** in the header and keep it open on the right while you talk. It's the best way to show the agent at work.
 
-| Time | On screen / say | What the evaluator should see |
+| Time | Do / say | Point out on screen |
 | --- | --- | --- |
-| 0:00–0:25 | Introduce Aria as Aura Skincare's AI care specialist. Show the voice choices, preview Aoede, and select **Gemini · clearer speech** if browser recognition struggles. | A warm spoken preview and visible conversation controls. |
-| 0:25–1:10 | Start a voice call and ask: “Where is my order O R D one zero one?” | ORD-101 is out for delivery via BlueDart, tracking BD-982103, expected by 6 PM. |
-| 1:10–1:55 | Ask: “Can I return O R D one zero two?” | A clear refusal because delivery was 14 days ago, beyond the seven-day window. |
-| 1:55–2:40 | Ask: “Please cancel O R D one zero three.” Then ask for that order's status. | Cancellation succeeds only for Processing; its status is Cancelled within this call. |
-| 2:40–3:05 | Ask: “Can you book me a flight?” | Aria politely guides the conversation back to Aura support. |
-| 3:05–3:30 | During a longer answer, speak to interrupt, or use **Interrupt & speak** if speaker echo makes the automatic detector unreliable. | Aria stops and listens; the transcript marks interrupted speech. |
-| 3:30–4:15 | End the call. Show and copy the structured JSON, then download the transcript. | Intent, order ID, resolution, chronological turns and verified tool outcomes. |
-| 4:15–4:45 | Briefly explain: browser microphone → recognition/Gemini transcription → AI function calls → server policy tools → Gemini speech → verified summary. | State why refusals and cancellations come from server rules, not model wording. |
+| 0:00–0:20 | "This is Aria, a voice support agent for Aura Skincare." | The orb, the test orders and the conversation panel. |
+| 0:20–0:55 | **Start call.** After the greeting: *"Where is my order O R D one oh one?"* | The orb turns emerald while listening, amber while thinking, violet while speaking. The trace shows `get_order_details(order_id: "ORD-101")` and *Answered from the order record*: a plain status question needs no model call, so the reply is tagged **instant**. Point at the response time under the reply. |
+| 0:55–1:25 | *"Can I return ORD-102?"* | The refusal (14 days, beyond the 7-day window) carries a **policy** tag: the server made the decision and wrote the words. |
+| 1:25–2:00 | *"Please cancel ORD-103."* → Aria asks to confirm → *"Yes, go ahead."* | *Confirmation before action* in the trace; the ORD-103 badge flips to **Cancelled** live. |
+| 2:00–2:20 | *"Can you book me a flight to Goa?"* | Polite scope refusal. |
+| 2:20–2:35 | Start talking while Aria is answering (or press ✋). | Barge-in: she fades out and listens; the bubble is marked *interrupted*. |
+| 2:35–2:55 | *"That's all, thank you. Bye!"* | Aria says goodbye and ends the call herself. |
+| 2:55–3:30 | The **Call summary** sheet opens by itself. | Intent / order / resolution tiles, issues handled, actions taken, then the **JSON** tab, Copy JSON and Transcript. Mention that the facts come from the verified tool log. |
+| 3:30–3:55 | Click the **aura** wordmark and switch to **Veda Haircare**. Tap *Ask about a return* (*"Can I return ORD-202?"*). | Multi-brand: same agent, different policy. ORD-202 was delivered 9 days ago; Veda's 10-day window allows it, where Aura's 7-day window refused ORD-102. |
+| 3:55–4:35 | Open **How it works** in the header. | Speech recognition → Gemini function calling → server tools and policy engine → streamed neural voice → summary. Guardrails: order-ID provenance, decisions in code, verbatim refusals, confirmation, scope. |
 
-If microphone access is unavailable on the recording machine, use **Start a text call** and say clearly in the video that this is a text demonstration of the same policy and summary path. Do not claim it demonstrates microphone quality. Before recording the voice version, test the replacement Gemini key and confirm that the footer says **AI conversation · Gemini** and the voice preview is audible.
+**A short Hindi moment** works well: pick Hindi in ⚙, then ask *"मेरा ऑर्डर ORD-101 कहाँ है?"*. Aria answers in Hindi with a Hindi voice.
+
+**Optional extras if time allows:** the brief's example *"I bought this 20 days ago and have opened it, can I return it?"*, *"Where is ORD-999?"*, or Hinglish: *"Mera order ORD-101 kab tak aayega?"* (all in the ✦ scenarios menu too).
+
+**If something goes wrong on camera:** typing works for every scenario, and Aria still speaks her replies. If the voice service fails, the next voice in the chain (Sarvam, then the browser's) takes over. Say so rather than cutting it.

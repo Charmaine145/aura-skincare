@@ -6,3 +6,5 @@ node_modules/
 tmp/
 output/
 Task.pdf
+.claude/
+plan.md

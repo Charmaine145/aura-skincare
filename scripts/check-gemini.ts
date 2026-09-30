@@ -1,18 +1,40 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { aiReply } from "../src/lib/conversation";
+/**
+ * Live smoke test against the real Gemini API (uses a few requests of quota).
+ *   npx tsx scripts/check-gemini.ts
+ * Runs a real tool-calling turn and a real post-call summary. Never prints the key.
+ */
+import { runTurn } from "../src/lib/agent/agent";
+import { getProvider } from "../src/lib/agent/providers";
 import { newSession } from "../src/lib/session";
-import { pcmToWav } from "../src/lib/audio";
-import { voicePreviewText } from "../src/lib/voiceOptions";
+import { modelSummary } from "../src/lib/summary";
+import { GREETING } from "../src/lib/voice/options";
+import type { AgentEvent, ChatMessage } from "../src/types";
+
+process.loadEnvFile?.(".env.local");
+
 async function main() {
-  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is required.");
+  const provider = getProvider();
+  if (!provider || provider.name !== "Gemini") throw new Error("Set GEMINI_API_KEY in .env.local first.");
   const session = newSession();
-  const reply = await aiReply([{ role: "user", content: "Where is my order ORD-101?" }], session);
-  console.log(JSON.stringify({ conversation: reply, toolOutcomes: session.outcomes }));
-  const response = await fetch("http://127.0.0.1:3000/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: voicePreviewText, voice: "Aoede" }), signal: AbortSignal.timeout(60000) });
-  if (!response.ok) { console.log(JSON.stringify({ ttsStatus: response.status, error: (await response.json()).error })); process.exitCode = 1; return; }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.toString("ascii", 0, 4) !== "RIFF") throw new Error("Voice endpoint did not return WAV audio.");
-  await mkdir("output", { recursive: true }); await writeFile("output/aria-friendly-voice.wav", bytes);
-  console.log(JSON.stringify({ ttsStatus: response.status, bytes: bytes.length, sampleRate: bytes.readUInt32LE(24), durationSeconds: (bytes.length - 44) / bytes.readUInt32LE(28) }));
+  // The UI always starts with Aria's greeting, so the live check does too.
+  const transcript: ChatMessage[] = [{ role: "assistant", content: GREETING }];
+  const lines = process.argv.slice(2).length ? process.argv.slice(2) : ["Where is my order ORD one oh one?", "Can I return ORD-102? I haven't opened it.", "Book me a flight to Goa."];
+
+  for (const line of lines) {
+    transcript.push({ role: "user", content: line });
+    const events: AgentEvent[] = [];
+    const started = performance.now();
+    const result = await runTurn(transcript, session, event => events.push(event));
+    transcript.push({ role: "assistant", content: result.reply });
+    console.log(`\nCustomer: ${line}\nAria (${result.source}, ${Math.round(performance.now() - started)} ms): ${result.reply}`);
+    for (const event of events) console.log(`  · ${event.type}${"name" in event ? ` ${event.name}` : ""}${"ms" in event ? ` ${event.ms} ms` : ""}${"status" in event ? ` → ${event.status}` : ""}`);
+  }
+
+  const summary = await modelSummary(provider, { session, transcript, durationSeconds: 60, avgResponseMs: null });
+  console.log("\nSummary:", JSON.stringify(summary, null, 2));
 }
-main().catch(error => { console.error(error instanceof Error ? error.message.replaceAll(process.env.GEMINI_API_KEY || "redact-placeholder", "[redacted]") : "Provider check failed"); process.exitCode = 1; });
+
+main().catch(error => {
+  console.error(error instanceof Error ? error.message.replaceAll(process.env.GEMINI_API_KEY || "\u0000", "[redacted]") : "Check failed");
+  process.exitCode = 1;
+});

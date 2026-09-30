@@ -1,8 +1,41 @@
 import { z } from "zod";
+import { getProvider } from "@/lib/agent/providers";
+import { checkRateLimit } from "@/lib/rateLimit";
 import { readSession } from "@/lib/session";
-import { summarize } from "@/lib/summary";
-import { readBody } from "@/lib/validation";
+import { modelSummary, rulesSummary, type SummaryInput } from "@/lib/summary";
+import { messageSchema, readBody, sessionTokenSchema } from "@/lib/validation";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 30;
+
+const bodySchema = z.object({
+  session: sessionTokenSchema,
+  transcript: z.array(messageSchema).max(200),
+  metrics: z.object({ duration_seconds: z.number().int().min(0).max(86_400).nullable(), avg_response_ms: z.number().int().min(0).max(120_000).nullable() }).partial().optional(),
+}).strict();
+
 export async function POST(request: Request) {
-  try { const input = z.object({ session: z.string().max(60000).optional() }).strict().parse(await readBody(request)); return Response.json(summarize(readSession(input.session))); }
-  catch { return Response.json({ error: "Unable to verify this call summary." }, { status: 400 }); }
+  let input: SummaryInput;
+  try {
+    const body = bodySchema.parse(await readBody(request));
+    input = {
+      session: readSession(body.session),
+      transcript: body.transcript,
+      durationSeconds: body.metrics?.duration_seconds ?? null,
+      avgResponseMs: body.metrics?.avg_response_ms ?? null,
+    };
+  } catch {
+    return Response.json({ error: "Unable to verify this call summary." }, { status: 400 });
+  }
+
+  const provider = getProvider();
+  if (provider && checkRateLimit(request, "summary")) {
+    try {
+      return Response.json(await modelSummary(provider, input, AbortSignal.any([request.signal, AbortSignal.timeout(12_000)])));
+    } catch (error) {
+      if (process.env.ARIA_PROVIDER_DEBUG === "1") console.error("Model summary failed; using rules", error);
+    }
+  }
+  return Response.json(rulesSummary(input));
 }
