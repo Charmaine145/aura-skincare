@@ -22,6 +22,11 @@ export async function runTurn(history: ChatMessage[], session: SessionData, emit
   const text = history.at(-1)!.content;
   const mentioned = [...new Set(history.filter(m => m.role === "user").flatMap(m => extractOrderIds(m.content)))];
   const ctx: ToolContext = { session, mentionedIds: new Set(mentioned), intent: detectIntent(text) };
+  // Conversation memory: a short "when will it arrive?" follows the one order this call has
+  // verified. With several orders in play the intent stays GENERAL and Aria asks which one.
+  if (ctx.intent === "GENERAL" && isSingleOrderFollowUp(text, ctx)) ctx.intent = "ORDER_TRACKING";
+  // Several orders in play: a bare "when will it arrive?" must ask which one, never guess.
+  else if (ctx.intent === "GENERAL" && ctx.mentionedIds.size > 1 && TRACKING_WORDS.test(text.toLowerCase())) ctx.intent = "ORDER_TRACKING";
   const pendingBefore = session.pendingCancel;
   const outcomesBefore = session.outcomes.length;
   const reply = replyLanguage(history.filter(m => m.role === "user").map(m => m.content), language);
@@ -81,14 +86,23 @@ const NEEDS_JUDGEMENT = /n't\b|\b(not|never|no|wrong|late|delay\w*|still|yet|why
 function directTracking(text: string, ctx: ToolContext, emit: Emit): TurnResult | null {
   const t = text.toLowerCase();
   const ids = extractOrderIds(text);
-  if (ctx.intent !== "ORDER_TRACKING" || ids.length !== 1 || ctx.session.pendingCancel) return null;
+  if (ctx.intent !== "ORDER_TRACKING" || ids.length > 1 || ctx.session.pendingCancel) return null;
   if (!TRACKING_WORDS.test(t) || NEEDS_JUDGEMENT.test(t) || t.split(/\s+/).length > 12) return null;
-  const result = runTool("get_order_details", { order_id: ids[0] }, ctx, emit);
+  const id = ids[0] ?? (isSingleOrderFollowUp(text, ctx) ? ctx.session.lastOrder : undefined);
+  if (!id) return null;
+  const result = runTool("get_order_details", { order_id: id }, ctx, emit);
   if (result.status === "not_found") {
-    return { reply: `I couldn't find an order with the ID ${ids[0]}. Could you check the number and read it out again?`, source: "direct", endCall: false };
+    return { reply: `I couldn't find an order with the ID ${id}. Could you check the number and read it out again?`, source: "direct", endCall: false };
   }
-  const order = result.status === "ok" ? findOrder(ids[0], ctx.session) : null;
+  const order = result.status === "ok" ? findOrder(id, ctx.session) : null;
   return order ? { reply: describeOrder(order), source: "direct", endCall: false } : null;
+}
+
+/** True only when exactly one order has been verified in this call and it is the last one discussed. */
+function isSingleOrderFollowUp(text: string, ctx: ToolContext): boolean {
+  const last = ctx.session.lastOrder;
+  if (!last || !ctx.mentionedIds.has(last) || ctx.mentionedIds.size !== 1) return false;
+  return TRACKING_WORDS.test(text.toLowerCase());
 }
 
 /** "Yes" / "No" after "Shall I go ahead?" is handled in code: instant, and never left to the model. */
@@ -177,6 +191,8 @@ function inferOutcome(text: string, intent: Intent, reply: string, brand: Brand)
       return { intent, order_id: null, resolution: "POLICY_DECLINED", detail: `Declined an out-of-scope request and steered back to ${brand.shortName} support.` };
     case "POLICY_QUESTION":
       return { intent, order_id: null, resolution: "RESOLVED", detail: `Answered a question about ${TOPIC_LABEL[policyTopic(text)]}.` };
+    case "PRODUCT_QUESTION":
+      return { intent, order_id: null, resolution: "RESOLVED", detail: "Answered a product question from the verified catalogue." };
     case "HUMAN_HANDOFF":
       return { intent, order_id: null, resolution: "NEEDS_INFORMATION", detail: "Offered to connect the customer with the care team." };
     case "GENERAL":

@@ -15,6 +15,9 @@ export function detectIntent(text: string): Intent {
   if (/\bcancel|\bradd\b/.test(t)) return "CANCELLATION";
   if (/\b(damag\w*|broken|defect\w*|leak\w*|spill\w*|crack\w*|wrong (item|product)|kharab|toota|tuta)\b/.test(t)) return "DAMAGED_PRODUCT";
   if (/\b(return\w*|refund\w*|replace\w*|exchange|money back|wapas|vapas|wapis)\b/.test(t)) return "RETURN_REQUEST";
+  const productWords = /\b(serum|sunscreen|moisturi[sz]er|cleanser|face ?wash|toner|shampoo|conditioner|hair ?oil|scalp|lip balm|product|products|routine|ingredients?|catalogue|catalog)\b/.test(t);
+  const productAsk = /\b(recommend\w*|suggest\w*|suitable|best|which|what (should|can|do) (i|you)|for (my|dry|oily|sensitive|combination)|skin type|ingredients?|routine|help (me )?(with|choose)|good for)\b/.test(t) || /\b(dry|oily|dull|acne|blemish\w*|sensitive) (skin|scalp)\b/.test(t);
+  if (!extractOrderIds(t).length && productWords && productAsk) return "PRODUCT_QUESTION";
   if (mentionsOrder && /\b(where|track\w*|status|arriv\w*|reach\w*|dispatch\w*|deliver\w*|ship\w*|when|kab|kahan|kaha|aayega|ayega|aaega|pahunch\w*)\b/.test(t)) return "ORDER_TRACKING";
   if (/\b(cod|cash|upi|pay\w*|shipping|delivery|deliver|charges?|fees?|free|policy|policies|how long|business days|brand|organic|ayurved\w*|about (aura|veda))\b/.test(t)) return "POLICY_QUESTION";
   if (/\b(where|track\w*|status|kab tak|kahan|aayega)\b/.test(t)) return "ORDER_TRACKING";

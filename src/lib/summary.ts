@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { brandById, type Brand } from "@/data/brand";
 import type { ChatProvider } from "@/lib/agent/providers";
+import { buildRecap } from "@/lib/recap";
 import type { CallSummary, ChatMessage, Intent, Resolution, SessionData, TurnOutcome } from "@/types";
 
 /**
@@ -9,7 +10,7 @@ import type { CallSummary, ChatMessage, Intent, Resolution, SessionData, TurnOut
  * and its output is schema-validated; if anything fails, a rule-based summary is used.
  */
 
-export const INTENTS = ["ORDER_TRACKING", "CANCELLATION", "RETURN_REQUEST", "DAMAGED_PRODUCT", "POLICY_QUESTION", "HUMAN_HANDOFF", "OUT_OF_SCOPE", "GENERAL"] as const satisfies readonly Intent[];
+export const INTENTS = ["ORDER_TRACKING", "CANCELLATION", "RETURN_REQUEST", "DAMAGED_PRODUCT", "POLICY_QUESTION", "PRODUCT_QUESTION", "HUMAN_HANDOFF", "OUT_OF_SCOPE", "GENERAL"] as const satisfies readonly Intent[];
 export const RESOLUTIONS = ["RESOLVED", "POLICY_DECLINED", "NEEDS_INFORMATION", "ESCALATED", "UNRESOLVED"] as const satisfies readonly Resolution[];
 const SENTIMENTS = ["POSITIVE", "NEUTRAL", "NEGATIVE"] as const;
 
@@ -49,6 +50,7 @@ const intentPhrase = (intent: Intent, brand: Brand): string => ({
   RETURN_REQUEST: "returning a product",
   DAMAGED_PRODUCT: "a damaged product",
   POLICY_QUESTION: `${brand.shortName}'s policies`,
+  PRODUCT_QUESTION: "products and routines",
   HUMAN_HANDOFF: "speaking with a person",
   OUT_OF_SCOPE: `a request outside ${brand.shortName} support`,
   GENERAL: "a general enquiry",
@@ -74,23 +76,29 @@ export function rulesSummary({ session, transcript, durationSeconds, avgResponse
     : details.length
       ? `Customer called about ${intentPhrase(intent, brand)}. ${details.join(" ")}`
       : "Customer greeted Aria but did not raise a specific request.";
+  const resolution_status: CallSummary["resolution_status"] =
+    customerTurns === 0 ? "NO_CONVERSATION" : session.escalations.length && intent === "HUMAN_HANDOFF" ? "ESCALATED" : latestForIntent?.resolution ?? "UNRESOLVED";
+  const order_ids = [...new Set(issues.map(i => i.order_id).filter((id): id is string => knownOrder(brand, id)))];
+  const follow_up_required = session.escalations.length > 0;
+  const order_id = primaryOrder(issues, intent, brand);
 
   return {
     brand: brand.name,
     customer_intent: intent,
-    order_id: primaryOrder(issues, intent, brand),
-    resolution_status: customerTurns === 0 ? "NO_CONVERSATION" : session.escalations.length && intent === "HUMAN_HANDOFF" ? "ESCALATED" : latestForIntent?.resolution ?? "UNRESOLVED",
+    order_id,
+    resolution_status,
     call_summary,
     customer_sentiment: sentimentOf(transcript),
-    follow_up_required: session.escalations.length > 0,
+    follow_up_required,
     issues,
     actions_taken: [
       ...session.cancelled.map(id => `Cancelled ${id} after the customer confirmed`),
       ...session.escalations.map(e => `Created care team request ${e.reference}`),
     ],
-    order_ids: [...new Set(issues.map(i => i.order_id).filter((id): id is string => knownOrder(brand, id)))],
+    order_ids,
     metrics: { customer_turns: customerTurns, tool_calls: session.toolCalls, duration_seconds: durationSeconds, avg_response_ms: avgResponseMs },
     generated_by: "rules",
+    recap: buildRecap({ brand, session, transcript, intent, resolution: resolution_status, issues, orderId: order_id, followUpRequired: follow_up_required }),
   };
 }
 
@@ -115,6 +123,51 @@ const llmSchema = z.object({
   customer_sentiment: z.enum(SENTIMENTS),
   follow_up_required: z.boolean(),
 });
+
+const RESOLUTIONS_OR_EMPTY = [...RESOLUTIONS, "NO_CONVERSATION"] as const;
+
+const recapActionSchema = z.object({
+  action: z.string().trim().min(1).max(80),
+  order_id: z.string().trim().min(1).max(40).nullable(),
+  result: z.enum(["confirmed", "failed", "unconfirmed"]),
+  detail: z.string().trim().max(300),
+}).strict();
+
+export const callRecapSchema = z.object({
+  issue: z.string().trim().min(1).max(400),
+  order_reference: z.string().trim().min(1).max(40).nullable(),
+  key_points: z.array(z.string().trim().max(220)).max(6),
+  attempted_actions: z.array(recapActionSchema).max(10),
+  verified_outcomes: z.array(z.string().trim().max(400)).max(10),
+  unresolved_issues: z.array(z.string().trim().max(300)).max(8),
+  next_steps: z.array(z.string().trim().max(300)).max(6),
+}).strict();
+
+/** Final boundary validation: a malformed summary is never returned or downloaded. */
+export const callSummarySchema = z.object({
+  brand: z.string().trim().min(1).max(80),
+  customer_intent: z.enum(INTENTS),
+  order_id: z.string().trim().min(1).max(40).nullable(),
+  resolution_status: z.enum(RESOLUTIONS_OR_EMPTY),
+  call_summary: z.string().trim().min(1).max(20_000),
+  customer_sentiment: z.enum(SENTIMENTS),
+  follow_up_required: z.boolean(),
+  issues: z.array(z.object({
+    intent: z.enum(INTENTS),
+    order_id: z.string().trim().min(1).max(40).nullable(),
+    resolution: z.enum(RESOLUTIONS),
+  }).strict()).max(60),
+  actions_taken: z.array(z.string().trim().max(400)).max(80),
+  order_ids: z.array(z.string().trim().min(1).max(40)).max(80),
+  metrics: z.object({
+    customer_turns: z.number().int().min(0).max(500),
+    tool_calls: z.number().int().min(0).max(500),
+    duration_seconds: z.number().int().min(0).max(86_400).nullable(),
+    avg_response_ms: z.number().int().min(0).max(120_000).nullable(),
+  }).strict(),
+  generated_by: z.string().trim().min(1).max(80),
+  recap: callRecapSchema.optional(),
+}).strict();
 
 const jsonSchema = {
   type: "object",
@@ -149,14 +202,28 @@ export async function modelSummary(provider: ChatProvider, input: SummaryInput, 
   const mentioned = parsed.call_summary.toUpperCase().match(/\bORD-\d+\b/g) ?? [];
   if (mentioned.some(id => !discussed.has(id))) throw new Error("Summary referenced an order that was not discussed.");
 
+  const orderId = primaryOrder(base.issues, parsed.customer_intent, brandById(input.session.brand)) ?? (parsed.customer_intent === base.customer_intent ? base.order_id : null);
+  const followUpRequired = parsed.follow_up_required || input.session.escalations.length > 0;
+
   return {
     ...base,
     customer_intent: parsed.customer_intent,
-    order_id: primaryOrder(base.issues, parsed.customer_intent, brandById(input.session.brand)) ?? (parsed.customer_intent === base.customer_intent ? base.order_id : null),
+    order_id: orderId,
     resolution_status: parsed.resolution_status,
     call_summary: parsed.call_summary,
     customer_sentiment: parsed.customer_sentiment,
-    follow_up_required: parsed.follow_up_required || input.session.escalations.length > 0,
+    follow_up_required: followUpRequired,
     generated_by: provider.model,
+    // Rebuild from verified data with the model's classification; never from its prose.
+    recap: buildRecap({
+      brand: brandById(input.session.brand),
+      session: input.session,
+      transcript: input.transcript,
+      intent: parsed.customer_intent,
+      resolution: parsed.resolution_status,
+      issues: base.issues,
+      orderId,
+      followUpRequired,
+    }),
   };
 }

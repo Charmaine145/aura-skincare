@@ -4,6 +4,8 @@ import { getProvider } from "@/lib/agent/providers";
 import { checkRateLimit } from "@/lib/rateLimit";
 import { BRAND_IDS, type BrandId } from "@/data/brand";
 import { readSession, signSession } from "@/lib/session";
+import { saveTurn, type StoredToolCall } from "@/lib/store";
+import { persistEscalations } from "@/lib/tickets";
 import { historySchema, readBody, sessionTokenSchema } from "@/lib/validation";
 import type { ChatStreamEvent } from "@/types";
 
@@ -43,7 +45,15 @@ export async function POST(request: Request) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      const calls = new Map<string, StoredToolCall>();
+      let guardrails = 0;
+      const modelMs: number[] = [];
       const send = (event: ChatStreamEvent) => {
+        // Keep the verified server-side facts for analytics, never the model's wording.
+        if (event.type === "tool_call") calls.set(event.id, { name: event.name, status: "running", ms: 0 });
+        else if (event.type === "tool_result") calls.set(event.id, { name: event.name, status: event.status, ms: event.ms });
+        else if (event.type === "guardrail") guardrails++;
+        else if (event.type === "model") modelMs.push(event.ms);
         try {
           controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
         } catch {
@@ -51,13 +61,27 @@ export async function POST(request: Request) {
         }
       };
       const started = performance.now();
+      let failure: string | null = null;
       try {
         const result = await runTurn(input.messages, session, send, request.signal, input.language);
+        const tickets = await persistEscalations(session);
         send({ type: "reply", text: result.reply, source: result.source });
-        send({ type: "done", session: signSession(session), mode, cancelled: session.cancelled, endCall: result.endCall, ms: Math.round(performance.now() - started) });
+        send({ type: "done", session: signSession(session), mode, cancelled: session.cancelled, endCall: result.endCall, ms: Math.round(performance.now() - started), tickets });
       } catch (error) {
         // No "done" event: the browser keeps its previous session, so a failed turn changes nothing.
-        send({ type: "error", message: error instanceof Error && error.name !== "AbortError" && error.name !== "TimeoutError" ? error.message : "The request took too long. Please try again." });
+        failure = error instanceof Error && error.name !== "AbortError" && error.name !== "TimeoutError" ? error.message : "The request took too long. Please try again.";
+        send({ type: "error", message: failure });
+      } finally {
+        await saveTurn({
+          sid: session.sid ?? "unknown-call",
+          brand: session.brand ?? "aura",
+          mode,
+          ms: Math.round(performance.now() - started),
+          tool_calls: [...calls.values()],
+          guardrails,
+          model_ms: modelMs,
+          error: failure,
+        });
       }
       try {
         controller.close();

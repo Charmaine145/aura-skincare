@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { brandById, type Brand } from "@/data/brand";
+import { productsFor, productSearchText } from "@/data/products";
 import { normalizeOrderId } from "@/lib/orders/orderIds";
+import { categoryFor, ticketCategory } from "@/lib/ticketCategory";
 import type { Intent, Order, Resolution, SessionData, ToolName, ToolStatus, TurnOutcome } from "@/types";
 
 /**
@@ -51,6 +53,12 @@ export const toolSchemas = {
     photos_available: z.boolean().optional(),
   }),
   escalate_to_human: z.object({ reason: z.string().trim().min(1).max(300), order_id: z.string().max(40).optional() }),
+  find_products: z.object({
+    query: z.string().trim().max(120).optional(),
+    concern: z.string().trim().max(80).optional(),
+    skin_type: z.string().trim().max(40).optional(),
+    max_price: z.number().int().min(0).max(100_000).optional(),
+  }),
 } satisfies Record<ToolName, z.ZodTypeAny>;
 
 const fact = (description: string) => ({ type: "boolean", description });
@@ -101,6 +109,20 @@ export const toolDefinitions: { name: ToolName; description: string; parameters:
       type: "object",
       properties: { reason: { type: "string", description: "One-line reason for the care team." }, order_id: orderIdParam },
       required: ["reason"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "find_products",
+    description: "Search this brand's product catalogue by name, skincare or haircare goal, skin type or budget. Use for product, suitability and routine questions. Only recommend returned products; never invent ingredients, prices or stock. Do not diagnose or promise results.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Words the customer used, e.g. 'moisturiser for dry skin'." },
+        concern: { type: "string", description: "The goal, e.g. dryness, dullness, oil control, sun protection, hair fall." },
+        skin_type: { type: "string", description: "The customer's stated skin or scalp type, e.g. oily, dry, sensitive." },
+        max_price: { type: "number", description: "Maximum budget in rupees, if the customer gave one." },
+      },
       additionalProperties: false,
     },
   },
@@ -364,18 +386,147 @@ export function checkReturnEligibility(id: string, facts: ReturnFacts, session: 
   };
 }
 
+const PRODUCT_ALIASES: Record<string, string[]> = {
+  oily: ["oily", "oil control", "shine", "blemish"],
+  dry: ["dry", "dryness", "dehydrated", "flaky"],
+  sensitive: ["sensitive", "sensitivity", "irritation", "calm"],
+  combination: ["combination"],
+  normal: ["normal"],
+  acne: ["blemish", "acne", "breakout", "oil control"],
+  blemish: ["blemish", "acne", "breakout", "oil control"],
+  dull: ["dull", "dullness", "bright", "glow", "radiance"],
+  brightening: ["bright", "dull", "glow", "radiance", "tone"],
+  hydration: ["hydrat", "dry", "moistur"],
+  "hair fall": ["hair fall", "breakage", "weak hair", "fuller"],
+  dandruff: ["flaky", "itchy scalp", "neem"],
+  frizz: ["frizz", "dryness", "breakage"],
+};
+const aliasFor = (value: string) => {
+  const key = value.toLowerCase().trim();
+  return PRODUCT_ALIASES[key] ?? [key];
+};
+
+function findProducts(args: { query?: string; concern?: string; skin_type?: string; max_price?: number }, ctx: ToolContext): ToolExecution {
+  const brand = brandOf(ctx.session);
+  const query = args.query?.toLowerCase().trim() ?? "";
+  const concern = args.concern?.toLowerCase().trim() ?? "";
+  const skin = args.skin_type?.toLowerCase().trim() ?? "";
+  if (!query && !concern && !skin && args.max_price === undefined) {
+    return {
+      status: "needs_info",
+      output: { found: false, instruction: "Ask whether they have a goal (for example dryness, dullness or oil control), their skin type, and their budget. Do not guess a product." },
+      summary: "Product search needs a goal or skin type",
+      outcome: { intent: "PRODUCT_QUESTION", order_id: null, resolution: "NEEDS_INFORMATION", detail: "Asked what the customer wants from a product before recommending one." },
+    };
+  }
+
+  const words = [...new Set([query, concern, skin].join(" ").split(/[^a-z0-9]+/).filter(word => word.length > 2 && !["for", "the", "and", "with", "product", "products", "skin", "hair", "care"].includes(word)))];
+  const concerned = concern ? aliasFor(concern) : [];
+  const candidates = productsFor(brand.id).filter(product => {
+    if (args.max_price !== undefined && product.price > args.max_price) return false;
+    if (skin) {
+      const types = product.skin_types.map(type => type.toLowerCase());
+      if (types.includes("all")) return true;
+      const aliases = aliasFor(skin);
+      if (types.some(type => type.includes(skin) || skin.includes(type) || aliases.some(alias => type.includes(alias)))) return true;
+      return false;
+    }
+    return true;
+  });
+
+  const scored = candidates
+    .map(product => {
+      const hay = productSearchText(product);
+      let relevance = 0;
+      for (const word of words) if (hay.includes(word)) relevance += product.name.toLowerCase().includes(word) ? 4 : 1;
+      for (const alias of concerned) if (hay.includes(alias)) relevance += 2;
+      // Stock only breaks ties; it must never make an unrelated product a "match".
+      const score = relevance + (product.availability === "In stock" ? 1 : 0);
+      return { product, score, relevance };
+    })
+    .filter(item => item.relevance > 0)
+    .sort((a, b) => b.score - a.score || Number(b.product.availability === "In stock") - Number(a.product.availability === "In stock"));
+
+  // A goal with no catalogue match is a safe "I don't have that", never an invented product.
+  const concernMatched = !concern || scored.some(item => concerned.some(alias => productSearchText(item.product).includes(alias)));
+  if (!scored.length || !concernMatched) {
+    return {
+      status: "needs_info",
+      output: {
+        found: false,
+        instruction: `No product in the ${brand.name} catalogue matches this. Say so plainly, offer a different goal or budget, or offer the care team. Never invent a product, ingredient or price.`,
+      },
+      summary: "No catalogue match",
+      outcome: { intent: "PRODUCT_QUESTION", order_id: null, resolution: "NEEDS_INFORMATION", detail: "No catalogue product matched; offered alternatives or the care team." },
+    };
+  }
+
+  const matches = scored.slice(0, 3).map(({ product }) => {
+    const why: string[] = [];
+    if (query && productSearchText(product).includes(query.split(/\s+/)[0])) why.push(`matches “${args.query}”`);
+    const hit = product.concerns.find(item => [...words, ...concerned].some(word => item.toLowerCase().includes(word)));
+    if (hit) why.push(`aimed at ${hit}`);
+    if (skin && (product.skin_types.includes("all") || product.skin_types.some(type => type.toLowerCase().includes(skin) || skin.includes(type.toLowerCase())))) {
+      why.push(`suited to ${skin} skin`);
+    }
+    if (args.max_price !== undefined) why.push(`within ₹${args.max_price.toLocaleString("en-IN")}`);
+    return {
+      product_id: product.id,
+      name: product.name,
+      size: product.size,
+      price_rupees: product.price,
+      availability: product.availability,
+      description: product.description,
+      usage: product.usage,
+      key_ingredients: product.key_ingredients,
+      why: why.length ? why.join(", ") : `${product.category} in the ${brand.name} catalogue`,
+      note: product.note ?? null,
+    };
+  });
+
+  return {
+    status: "ok",
+    output: {
+      found: true,
+      products: matches,
+      note: "Sample catalogue data. Recommend only these products, keep prices and ingredients exactly as given, and make no medical claims. For persistent skin or scalp problems, suggest a qualified professional.",
+    },
+    summary: `Recommended ${matches.map(item => item.name).join(", ")}`,
+    outcome: {
+      intent: "PRODUCT_QUESTION",
+      order_id: null,
+      resolution: "RESOLVED",
+      detail: `Suggested ${matches.map(item => item.name).join(", ")} from the catalogue${skin ? ` for ${skin} skin` : ""}.`,
+    },
+  };
+}
+
 function escalate(reason: string, rawOrderId: string | undefined, ctx: ToolContext): ToolExecution {
   const { session } = ctx;
   const candidate = rawOrderId ? normalizeOrderId(rawOrderId) : undefined;
   const order_id = candidate && ctx.mentionedIds.has(candidate) ? candidate : null;
   const existing = session.escalations[0];
   const reference = existing?.reference ?? `${brandOf(session).referencePrefix}-${Math.floor(1000 + Math.random() * 9000)}`;
-  if (!existing) session.escalations.push({ reference, reason, order_id });
+  if (!existing) {
+    session.escalations.push({
+      reference,
+      reason,
+      order_id,
+      category: ticketCategory(ctx.intent, reason),
+      status: "Open",
+      created_at: Date.now(),
+    });
+  }
   return {
     status: "done",
-    output: { reference, logged: true, note: "Logged for the care team. Give the customer the reference. Do not promise a specific callback time, refund or outcome." },
+    output: {
+      reference,
+      logged: true,
+      demo: true,
+      note: "Recorded as a demo care-team ticket. Give the customer the reference. Say clearly that this is a demo request and no human has been contacted yet. Do not promise a callback time, refund or outcome.",
+    },
     summary: `Care team request ${reference}`,
-    outcome: { intent: "HUMAN_HANDOFF", order_id, resolution: "ESCALATED", detail: `Escalated to the care team (${reference}): ${reason}` },
+    outcome: { intent: "HUMAN_HANDOFF", order_id, resolution: "ESCALATED", detail: `Logged demo care-team ticket ${reference}: ${reason}` },
   };
 }
 
@@ -389,6 +540,7 @@ export function executeTool(name: string, rawArgs: unknown, ctx: ToolContext): T
   const args = parsed.data as Record<string, unknown>;
 
   // Guardrail: the model may only act on order IDs the customer actually said.
+  if (tool === "find_products") return findProducts(args as { query?: string; concern?: string; skin_type?: string; max_price?: number }, ctx);
   if (tool !== "escalate_to_human") {
     const id = normalizeOrderId(String(args.order_id));
     if (!ctx.mentionedIds.has(id)) {

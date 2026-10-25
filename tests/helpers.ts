@@ -1,4 +1,9 @@
 import type { AgentEvent, ChatMessage } from "../src/types";
+import os from "node:os";
+import path from "node:path";
+
+// Tests must never write demo records into the developer's real .data store.
+process.env.ARIA_DATA_DIR ??= path.join(os.tmpdir(), `aria-tests-${process.pid}`);
 
 /** Runs `fn` with temporary environment variables, restoring them afterwards. */
 export async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T> | T): Promise<T> {

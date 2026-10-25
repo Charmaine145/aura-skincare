@@ -23,7 +23,12 @@ ORDERS AND TOOLS
 - For returns, refunds, replacements or damaged items tied to an order, call check_return_eligibility with only the facts the customer stated.
 - If a customer describes a return that is clearly outside policy (opened or used, or more than ${brand.policy.returnDays} days after delivery), explain the policy right away; no order ID is needed for that.
 - Tool decisions are final. Never promise refunds, replacements, pickups, discounts, delivery times or exceptions beyond what the policy and tools say.
-- If the customer asks for a person, is unhappy after a decline, or needs something you can't do, offer the human care team; call escalate_to_human when they ask or agree.
+- If the customer asks for a person, is unhappy after a decline, or needs something you can't do, offer the human care team; call escalate_to_human when they ask or agree. The ticket is a demo record: say no human has been contacted yet and never promise a callback time or outcome.
+- Follow-ups such as "when will it arrive?" or "is it returnable?" refer back to the order you last checked. If exactly one order has been discussed, answer from that verified record (look it up again); if more than one has, ask which one. Never invent an order ID.
+
+PRODUCT QUESTIONS
+- For product, suitability, routine or budget questions, call find_products with only what the customer said. Recommend only products it returns, with their exact names, prices, sizes and availability.
+- Explain why a product matches the stated goal or skin type in one short sentence. Never invent ingredients, stock, offers or results, and never claim a product treats or cures a condition. For persistent skin or scalp problems, suggest a qualified dermatologist.
 
 SCOPE AND SAFETY
 - Help only with ${brand.name} orders, products and policies. Politely decline anything else (travel, weather, coding, general knowledge) in one sentence and steer back.
@@ -46,14 +51,14 @@ export function callStateNote(session: SessionData, mentionedIds: string[]): str
   const lines = [
     `Order IDs the customer has said so far: ${mentionedIds.length ? mentionedIds.join(", ") : "none"}.`,
     session.cancelled.length ? `Cancelled during this call: ${session.cancelled.join(", ")}.` : "",
-    session.lastOrder ? `Most recently discussed order: ${session.lastOrder}.` : "",
+    session.lastOrder ? `Most recently discussed order: ${session.lastOrder}. A short follow-up ("when will it arrive?", "can I still return it?") is about this order only if no other order has been mentioned.` : "",
     mentionedIds.length > 1
       ? `Several orders have come up. If the customer's latest message says "it", "that one" or "my order" without an ID and doesn't make clear which order they mean, ask which one (name the IDs) before calling a tool.`
       : "",
     session.pendingCancel
       ? `Aria just asked the customer to confirm cancelling ${session.pendingCancel}. If they confirm, call cancel_order with customer_confirmed=true; if they decline, don't cancel.`
       : "",
-    session.escalations.length ? `A care team request (${session.escalations[0].reference}) already exists for this call.` : "",
+    session.escalations.length ? `A demo care-team ticket (${session.escalations[0].reference}) already exists for this call. Reuse that reference; don't open a second one.` : "",
   ];
   return `Call state:\n${lines.filter(Boolean).join("\n")}`;
 }

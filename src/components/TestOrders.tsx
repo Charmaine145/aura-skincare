@@ -6,6 +6,7 @@ import { Check, Copy } from "lucide-react";
 import { brandById } from "@/data/brand";
 import type { VoiceCall } from "@/hooks/useVoiceCall";
 import type { OrderStatus } from "@/types";
+import { OrderTimeline } from "./OrderTimeline";
 
 const TONE: Record<OrderStatus, string> = {
   "Out for Delivery": "transit",
@@ -16,9 +17,9 @@ const TONE: Record<OrderStatus, string> = {
 };
 
 const ACTIONS = [
-  { label: "Track", prompt: (id: string) => `Where is my order ${id}?` },
-  { label: "Return", prompt: (id: string) => `Can I return ${id}?` },
-  { label: "Cancel", prompt: (id: string) => `Please cancel ${id}.` },
+  { label: "Track Shipment", prompt: (id: string) => `Where is my order ${id}?` },
+  { label: "Request Return", prompt: (id: string) => `Can I return ${id}?` },
+  { label: "Cancel Order", prompt: (id: string) => `Please cancel ${id}.` },
 ];
 
 /** The brief's "Test Orders Helper": every sample order and its details, one tap from a question. */
@@ -37,10 +38,10 @@ export function TestOrders({ call }: { call: VoiceCall }) {
   };
 
   return (
-    <section className="orders" aria-label="Test orders">
+    <section className="orders" aria-label="Sample order dashboard">
       <header className="orders-head">
-        <span>Test orders</span>
-        <small>Sample data · resets each call</small>
+        <span>Sample Order Dashboard</span>
+        <small>Demo information · Order actions and records reset after each call.</small>
       </header>
       <ul>
         {brandById(call.brand).orders.map((order, i) => {
@@ -60,9 +61,13 @@ export function TestOrders({ call }: { call: VoiceCall }) {
                 </motion.span>
               </div>
               <div className="order-sub">
-                {order.customer_name}
-                {order.courier && <> · {order.courier} {order.tracking_id}</>} · {cancelled ? "Cancelled during this call" : order.notes}
+                <div>Customer: {order.customer_name}</div>
+                {order.courier && <div>Courier: {order.courier} · Tracking ID: {order.tracking_id}</div>}
+                <div>
+                  {order.courier ? "Delivery update" : "Order update"}: {cancelled ? "Cancelled during this call" : order.notes}
+                </div>
               </div>
+              <OrderTimeline status={status} courier={order.courier} trackingId={order.tracking_id} />
               <div className="order-actions">
                 {ACTIONS.map(action => (
                   <button key={action.label} disabled={busy} onClick={() => call.ask(action.prompt(order.order_id))}>

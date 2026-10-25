@@ -8,13 +8,13 @@ const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", displ
 
 export const metadata: Metadata = {
   title: "Aria · AI voice customer care",
-  description: "Talk to Aria, an AI voice support agent for D2C brands (Aura Skincare, Veda Haircare): live order lookup, policy guardrails and a structured post-call summary.",
+  description: "Talk to Aria, your personal AI support assistant for Aura Skincare and Aura Haircare: order tracking, returns, cancellations, policy guardrails and a structured post-call summary.",
 };
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f6f4ee" },
-    { media: "(prefers-color-scheme: dark)", color: "#0f1411" },
+    { media: "(prefers-color-scheme: light)", color: "#f4f1fa" },
+    { media: "(prefers-color-scheme: dark)", color: "#100e17" },
   ],
 };
 

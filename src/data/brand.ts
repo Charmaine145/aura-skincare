@@ -27,7 +27,7 @@ export interface Brand {
   id: BrandId;
   name: string;
   shortName: string;
-  /** Lower-case wordmark in the header. */
+  /** Brand wordmark shown in the sidebar and mobile header. */
   wordmark: string;
   /** "skin" or "hair": what product-suitability questions Aria cannot answer. */
   concern: string;
@@ -45,7 +45,7 @@ export const BRANDS: Record<BrandId, Brand> = {
     id: "aura",
     name: "Aura Skincare",
     shortName: "Aura",
-    wordmark: "aura",
+    wordmark: "Aura Skincare",
     concern: "skin",
     // From the brief, word for word.
     overview: "Aura Skincare is a premium organic Indian skincare brand focused on simple, effective skincare products made with thoughtfully selected ingredients.",
@@ -67,25 +67,25 @@ export const BRANDS: Record<BrandId, Brand> = {
   },
   veda: {
     id: "veda",
-    name: "Veda Haircare",
-    shortName: "Veda",
-    wordmark: "veda",
+    name: "Aura Haircare",
+    shortName: "Aura Haircare",
+    wordmark: "Aura Haircare",
     concern: "hair",
-    overview: "Veda Haircare is an Ayurvedic Indian haircare brand making oils, shampoos and scalp treatments from traditional herbs such as bhringraj, amla and neem.",
+    overview: "Aura Haircare is an Ayurvedic Indian haircare brand making oils, shampoos and scalp treatments from traditional herbs such as bhringraj, amla and neem.",
     policy: { returnDays: 10, damageHours: 72, codLimit: 5000, freeShippingAbove: 799, shippingFee: 79, deliveryDays: [4, 6] },
     orders: vedaOrders,
     referencePrefix: "VED",
     greetings: {
-      "en-IN": "Hi, I'm Aria, your AI care specialist at Veda Haircare. How can I help you today?",
-      "hi-IN": "नमस्ते, मैं आरिया हूँ, वेदा हेयरकेयर की एआई सहायक। मैं आपकी कैसे मदद कर सकती हूँ?",
-      "ta-IN": "வணக்கம், நான் ஆரியா, வேதா ஹேர்கேரின் உதவியாளர். நான் உங்களுக்கு எப்படி உதவலாம்?",
-      "te-IN": "నమస్తే, నేను ఆరియా, వేదా హెయిర్‌కేర్ సహాయకురాలిని. నేను మీకు ఎలా సహాయం చేయగలను?",
-      "bn-IN": "নমস্কার, আমি আরিয়া, বেদা হেয়ারকেয়ারের সহকারী। আমি আপনাকে কীভাবে সাহায্য করতে পারি?",
-      "mr-IN": "नमस्कार, मी आरिया, वेदा हेअरकेअरची सहायक. मी तुमची कशी मदत करू शकते?",
-      "gu-IN": "નમસ્તે, હું આરિયા છું, વેદા હેરકેરની સહાયક. હું તમારી કેવી રીતે મદદ કરી શકું?",
-      "kn-IN": "ನಮಸ್ಕಾರ, ನಾನು ಆರಿಯಾ, ವೇದಾ ಹೇರ್‌ಕೇರ್ ಸಹಾಯಕಿ. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?",
-      "ml-IN": "നമസ്കാരം, ഞാൻ ആരിയ, വേദ ഹെയർകെയറിന്റെ സഹായി. ഞാൻ നിങ്ങളെ എങ്ങനെ സഹായിക്കണം?",
-      "pa-IN": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ, ਮੈਂ ਆਰੀਆ ਹਾਂ, ਵੇਦਾ ਹੇਅਰਕੇਅਰ ਦੀ ਸਹਾਇਕ। ਮੈਂ ਤੁਹਾਡੀ ਕਿਵੇਂ ਮਦਦ ਕਰ ਸਕਦੀ ਹਾਂ?",
+      "en-IN": "Hi, I'm Aria, your AI care specialist at Aura Haircare. How can I help you today?",
+      "hi-IN": "नमस्ते, मैं आरिया हूँ, ऑरा हेयरकेयर की एआई सहायक। मैं आपकी कैसे मदद कर सकती हूँ?",
+      "ta-IN": "வணக்கம், நான் ஆரியா, ஆரா ஹேர்கேரின் உதவியாளர். நான் உங்களுக்கு எப்படி உதவலாம்?",
+      "te-IN": "నమస్తే, నేను ఆరియా, ఆరా హెయిర్‌కేర్ సహాయకురాలిని. నేను మీకు ఎలా సహాయం చేయగలను?",
+      "bn-IN": "নমস্কার, আমি আরিয়া, আউরা হেয়ারকেয়ারের সহকারী। আমি আপনাকে কীভাবে সাহায্য করতে পারি?",
+      "mr-IN": "नमस्कार, मी आरिया, ऑरा हेअरकेअरची सहायक. मी तुमची कशी मदत करू शकते?",
+      "gu-IN": "નમસ્તે, હું આરિયા છું, ઓરા હેરકેરની સહાયક. હું તમારી કેવી રીતે મદદ કરી શકું?",
+      "kn-IN": "ನಮಸ್ಕಾರ, ನಾನು ಆರಿಯಾ, ಆರಾ ಹೇರ್‌ಕೇರ್ ಸಹಾಯಕಿ. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?",
+      "ml-IN": "നമസ്കാരം, ഞാൻ ആരിയ, ഓറ ഹെയർകെയറിന്റെ സഹായി. ഞാൻ നിങ്ങളെ എങ്ങനെ സഹായിക്കണം?",
+      "pa-IN": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ, ਮੈਂ ਆਰੀਆ ਹਾਂ, ਔਰਾ ਹੇਅਰਕੇਅਰ ਦੀ ਸਹਾਇਕ। ਮੈਂ ਤੁਹਾਡੀ ਕਿਵੇਂ ਮਦਦ ਕਰ ਸਕਦੀ ਹਾਂ?",
     },
   },
 };
@@ -98,7 +98,14 @@ export const brandById = (id?: string | null): Brand => BRANDS[isBrandId(id) ? i
 /** One order per scenario, so suggestions always point at IDs this brand really has. */
 export function sampleIds(brand: Brand) {
   const first = (status: Order["status"]) => brand.orders.find(o => o.status === status)?.order_id ?? brand.orders[0].order_id;
-  return { track: first("Out for Delivery"), returnable: first("Delivered"), cancellable: first("Processing") };
+  const damaged = brand.orders.find(o => o.status === "Delivered" && o.delivered_days_ago !== undefined && o.delivered_days_ago * 24 <= brand.policy.damageHours)?.order_id ?? first("Delivered");
+  return {
+    track: first("Out for Delivery"),
+    returnable: first("Delivered"),
+    cancellable: first("Processing"),
+    damaged,
+    shipped: first("Shipped"),
+  };
 }
 
 const inr = (value: number) => `₹${value.toLocaleString("en-IN")}`;
@@ -108,11 +115,47 @@ const spoken = (value: number) => `${value.toLocaleString("en-IN")} rupees`;
 export function policyCards(brand: Brand) {
   const p = brand.policy;
   return [
-    { id: "shipping", title: "Shipping", text: `Free delivery above ${inr(p.freeShippingAbove)}. Below ${inr(p.freeShippingAbove)}, a ${inr(p.shippingFee)} shipping fee. Standard delivery in ${p.deliveryDays[0]}–${p.deliveryDays[1]} business days.` },
-    { id: "returns", title: "Returns & refunds", text: `Within ${p.returnDays} days of delivery, for unopened, unused products in original packaging.` },
-    { id: "damage", title: "Damaged or defective", text: `Report within ${p.damageHours} hours of delivery, with photos, for a replacement.` },
-    { id: "cancellation", title: "Cancellation", text: "Only while an order is Processing. Shipped or Out for Delivery orders can be refused at the doorstep." },
-    { id: "cod", title: "Cash on Delivery", text: `Available up to ${inr(p.codLimit)}. Pay by cash or UPI at the doorstep.` },
+    {
+      id: "shipping",
+      title: "Shipping and Delivery",
+      points: [
+        `Orders above ${inr(p.freeShippingAbove)} qualify for free delivery.`,
+        `Orders below ${inr(p.freeShippingAbove)} incur a ${inr(p.shippingFee)} shipping charge.`,
+        `Standard delivery takes ${p.deliveryDays[0]}–${p.deliveryDays[1]} business days.`,
+      ],
+    },
+    {
+      id: "returns",
+      title: "Returns and Refunds",
+      points: [
+        `Returns are accepted within ${p.returnDays} days of delivery.`,
+        "Products must be unopened, unused, and kept in their original packaging.",
+      ],
+    },
+    {
+      id: "damage",
+      title: "Damaged or Defective Products",
+      points: [
+        `Issues must be reported within ${p.damageHours} hours of delivery.`,
+        "Customers must provide photographs of the damaged or defective item to request a replacement.",
+      ],
+    },
+    {
+      id: "cancellation",
+      title: "Order Cancellation",
+      points: [
+        "Cancellation is permitted only while an order is in the Processing stage.",
+        "Orders that have already shipped or are out for delivery may be refused at the doorstep.",
+      ],
+    },
+    {
+      id: "cod",
+      title: "Cash on Delivery (COD)",
+      points: [
+        `COD is available for orders up to ${inr(p.codLimit)}.`,
+        "Customers can pay using cash or UPI when the order arrives.",
+      ],
+    },
   ];
 }
 

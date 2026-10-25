@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { brandById, DEFAULT_BRAND, type Brand, type BrandId } from "@/data/brand";
 import type { SessionData } from "@/types";
 
@@ -27,13 +27,24 @@ const secret = sessionSecret();
 const CALL_TTL_MS = 60 * 60 * 1000;
 
 export function newSession(brand: BrandId = DEFAULT_BRAND): SessionData {
-  return { v: 2, expires: Date.now() + CALL_TTL_MS, brand, cancelled: [], outcomes: [], escalations: [], toolCalls: 0 };
+  return { v: 2, expires: Date.now() + CALL_TTL_MS, sid: randomUUID(), startedAt: Date.now(), brand, cancelled: [], outcomes: [], escalations: [], toolCalls: 0 };
 }
 
 /** The brand a call is bound to: its orders and its policy numbers. */
 export const sessionBrand = (session: SessionData): Brand => brandById(session.brand);
 
 const sign = (payload: string) => createHmac("sha256", secret).update(payload).digest();
+
+/** Short signature attached to a ticket reference so a guessed reference can't read a ticket. */
+export function ticketToken(reference: string): string {
+  return sign(`ticket:${reference}`).toString("base64url").slice(0, 16);
+}
+
+export function verifyTicketToken(reference: string, token: string): boolean {
+  const expected = Buffer.from(ticketToken(reference));
+  const actual = Buffer.from(token);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
 
 export function signSession(data: SessionData): string {
   const payload = Buffer.from(JSON.stringify(data)).toString("base64url");

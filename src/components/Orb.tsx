@@ -1,22 +1,26 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { AgentState } from "@/types";
+import type { OrbState } from "@/lib/voice/orbState";
 
 /**
  * Aria's orb: a WebGL fluid sphere (in the spirit of React Bits' <Orb />). Its palette and speed
- * follow the call state, and its surface breathes with real audio: the caller's microphone while
- * listening, Aria's own voice output while speaking.
+ * follow the real call state, and its surface responds only to real audio: the caller's
+ * microphone while listening, Aria's own voice output while speaking. There is no synthetic
+ * level, so a muted or idle call never looks like it is picking up sound.
  */
 
 type Rgb = [number, number, number];
 const hex = (value: string): Rgb => [1, 3, 5].map(i => parseInt(value.slice(i, i + 2), 16) / 255) as Rgb;
 
-const PALETTES: Record<AgentState, { colors: [Rgb, Rgb, Rgb]; speed: number }> = {
-  Idle: { colors: [hex("#8fb9a0"), hex("#f4dcc8"), hex("#cfe6d8")], speed: 0.35 },
-  Listening: { colors: [hex("#27a77b"), hex("#a6ecd0"), hex("#17664f")], speed: 0.6 },
-  Thinking: { colors: [hex("#e2a444"), hex("#f9e3ae"), hex("#c06f2a")], speed: 1.5 },
-  Speaking: { colors: [hex("#8a66db"), hex("#f2a9cc"), hex("#5a7de3")], speed: 0.95 },
+/** Six states, all in Aura's lavender/violet family so the orb still reads as one brand. */
+const PALETTES: Record<OrbState, { colors: [Rgb, Rgb, Rgb]; speed: number }> = {
+  idle: { colors: [hex("#b7a4e0"), hex("#f3e7f7"), hex("#9a8fd6")], speed: 0.35 },
+  listening: { colors: [hex("#8f7ae0"), hex("#e6dcff"), hex("#6a58c8")], speed: 0.6 },
+  processing: { colors: [hex("#b06fd0"), hex("#f3d9f2"), hex("#8a4fb8")], speed: 1.5 },
+  speaking: { colors: [hex("#c07ae0"), hex("#f7d9ea"), hex("#8d6ae8")], speed: 0.95 },
+  interrupted: { colors: [hex("#c07f9e"), hex("#f6dbe6"), hex("#9a6bb0")], speed: 0.5 },
+  error: { colors: [hex("#c26a7a"), hex("#f4d6da"), hex("#9c5568")], speed: 0.4 },
 };
 
 const VERTEX = `attribute vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }`;
@@ -60,7 +64,7 @@ void main() {
   float r = length(p);
   float angle = atan(p.y, p.x);
 
-  // A living edge: slow noise, pushed outward by audio level.
+  // A living edge: slow noise, pushed outward by real audio level only.
   float wobble = (noise(vec3(cos(angle) * 1.6, sin(angle) * 1.6, uTime * 0.7)) - 0.5) * (0.06 + uLevel * 0.22);
   float radius = 0.72 + wobble + uLevel * 0.07;
   float inside = smoothstep(radius + 0.012, radius - 0.012, r);
@@ -102,8 +106,9 @@ function rms(analyser: AnalyserNode, buffer: Uint8Array<ArrayBuffer>) {
   return Math.sqrt(sum / buffer.length);
 }
 
-export function Orb({ state, mic, output }: { state: AgentState; mic: AnalyserNode | null; output: AnalyserNode | null }) {
+export function Orb({ state, mic, output }: { state: OrbState; mic: AnalyserNode | null; output: AnalyserNode | null }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const waveRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef(state);
   const audio = useRef({ mic, output });
 
@@ -113,6 +118,59 @@ export function Orb({ state, mic, output }: { state: AgentState; mic: AnalyserNo
   useEffect(() => {
     audio.current = { mic, output };
   }, [mic, output]);
+
+  useEffect(() => {
+    const wave = waveRef.current;
+    if (!wave || state !== "speaking" || !output) return;
+
+    const bars = wave.querySelectorAll<HTMLElement>(".orb-wave-bar");
+    const spectrum = new Uint8Array(output.frequencyBinCount);
+    const samples = new Uint8Array(256);
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let frame = 0;
+
+    const drawWave = () => {
+      if (motion.matches) {
+        wave.style.opacity = "0";
+        frame = 0;
+        return;
+      }
+
+      output.getByteFrequencyData(spectrum);
+      const level = rms(output, samples);
+      wave.style.opacity = level > 0.012 ? String(Math.min(0.9, level * 4)) : "0";
+
+      bars.forEach((bar, index) => {
+        const start = Math.floor((index / bars.length) ** 2 * spectrum.length * 0.55);
+        const end = Math.max(start + 1, Math.floor(((index + 1) / bars.length) ** 2 * spectrum.length * 0.55));
+        let total = 0;
+        let count = 0;
+        for (let bin = start; bin < Math.min(end, spectrum.length); bin++) {
+          total += spectrum[bin];
+          count++;
+        }
+        const intensity = count ? total / count / 255 : 0;
+        bar.style.transform = `scaleY(${0.12 + intensity * 1.2})`;
+      });
+      frame = requestAnimationFrame(drawWave);
+    };
+
+    const onMotionChange = () => {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      wave.style.opacity = "0";
+      if (!motion.matches) frame = requestAnimationFrame(drawWave);
+    };
+
+    motion.addEventListener("change", onMotionChange);
+    if (!motion.matches) frame = requestAnimationFrame(drawWave);
+    return () => {
+      cancelAnimationFrame(frame);
+      motion.removeEventListener("change", onMotionChange);
+      wave.style.opacity = "0";
+      bars.forEach(bar => { bar.style.transform = ""; });
+    };
+  }, [output, state]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -148,10 +206,21 @@ export function Orb({ state, mic, output }: { state: AgentState; mic: AnalyserNo
     const uLevel = uniform("uLevel");
     const uColors = [uniform("uColorA"), uniform("uColorB"), uniform("uColorC")];
 
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const colors = PALETTES.Idle.colors.map(c => [...c]) as Rgb[];
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let reduceMotion = motion.matches;
+    // With reduced motion the orb holds a still frame and only redraws when the state or size
+    // actually changes, so it stays honest without animating.
+    let dirty = true;
+    let lastState: OrbState | null = null;
+    const onMotionChange = (event: MediaQueryListEvent) => {
+      reduceMotion = event.matches;
+      dirty = true;
+    };
+    motion.addEventListener("change", onMotionChange);
+
+    const colors = PALETTES.idle.colors.map(c => [...c]) as [Rgb, Rgb, Rgb];
     const samples = new Uint8Array(256);
-    let speed = PALETTES.Idle.speed;
+    let speed = PALETTES.idle.speed;
     let clock = 0;
     let level = 0;
     let last = performance.now();
@@ -165,27 +234,47 @@ export function Orb({ state, mic, output }: { state: AgentState; mic: AnalyserNo
         canvas.width = width;
         canvas.height = height;
         gl.viewport(0, 0, width, height);
+        dirty = true;
       }
     };
 
     const draw = (now: number) => {
-      const dt = Math.min(0.05, (now - last) / 1000);
-      last = now;
+      resize();
       const current = stateRef.current;
       const palette = PALETTES[current];
-      // Ease the palette and speed toward the current state for smooth transitions.
-      const ease = 1 - Math.exp(-dt * 4);
-      for (let i = 0; i < 3; i++) for (let c = 0; c < 3; c++) colors[i][c] += (palette.colors[i][c] - colors[i][c]) * ease;
-      speed += (palette.speed - speed) * ease;
-      clock += dt * (reduceMotion ? 0.15 : speed);
+      if (current !== lastState) {
+        lastState = current;
+        dirty = true;
+      }
 
-      const source = current === "Listening" ? audio.current.mic : current === "Speaking" ? audio.current.output : null;
-      let target = source ? Math.min(1, rms(source, samples) * 4.5) : 0;
-      if (!source && current === "Speaking") target = 0.25 + 0.15 * Math.sin(now / 160); // browser voice can't be measured
-      if (current === "Thinking") target = 0.12 + 0.08 * Math.sin(now / 260);
-      level += (target - level) * (target > level ? 0.35 : 0.08);
+      if (reduceMotion) {
+        if (!dirty) {
+          frame = requestAnimationFrame(draw);
+          return;
+        }
+        // Snap the palette and hold the clock still: no easing, no shimmer.
+        for (let i = 0; i < 3; i++) colors[i] = [...palette.colors[i]];
+        speed = palette.speed;
+        level = 0;
+        clock = 0;
+        dirty = false;
+      } else {
+        const dt = Math.min(0.05, (now - last) / 1000);
+        last = now;
+        // Ease the palette and speed toward the current state for smooth transitions.
+        const ease = 1 - Math.exp(-dt * 4);
+        for (let i = 0; i < 3; i++) for (let c = 0; c < 3; c++) colors[i][c] += (palette.colors[i][c] - colors[i][c]) * ease;
+        speed += (palette.speed - speed) * ease;
+        clock += dt * speed;
 
-      resize();
+        // Real analysers only: the mic while Aria listens (or is interrupted), her output while speaking.
+        const source = current === "listening" || current === "interrupted"
+          ? audio.current.mic
+          : current === "speaking" ? audio.current.output : null;
+        const target = source ? Math.min(1, rms(source, samples) * 4.5) : 0;
+        level += (target - level) * (target > level ? 0.35 : 0.08);
+      }
+
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.uniform2f(uResolution, canvas.width, canvas.height);
@@ -197,12 +286,18 @@ export function Orb({ state, mic, output }: { state: AgentState; mic: AnalyserNo
     };
     frame = requestAnimationFrame(draw);
     // (No loseContext() here: React's dev double-mount would reuse the same, now dead, context.)
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      motion.removeEventListener("change", onMotionChange);
+    };
   }, []);
 
   return (
-    <div className="orb" data-state={state}>
-      <canvas ref={canvasRef} aria-hidden />
+    <div className="orb" data-state={state} aria-hidden>
+      <canvas ref={canvasRef} />
+      <div className="orb-wave" ref={waveRef}>
+        {Array.from({ length: 7 }, (_, index) => <span className="orb-wave-bar" key={index} />)}
+      </div>
     </div>
   );
 }

@@ -55,13 +55,16 @@ test("a call stays with the brand it started with", () => {
 
 test("prompt, greetings and knowledge are the brand's own", () => {
   const veda = BRANDS.veda;
+  assert.equal(BRANDS.aura.name, "Aura Skincare");
+  assert.equal(veda.name, "Aura Haircare");
+  assert.equal(veda.wordmark, "Aura Haircare");
   const prompt = systemPrompt(veda);
-  assert.match(prompt, /specialist for Veda Haircare/);
+  assert.match(prompt, /specialist for Aura Haircare/);
   assert.match(prompt, /within 10 days of delivery/);
   assert.match(prompt, /5,000 rupees/);
-  assert.doesNotMatch(prompt, /Aura/);
+  assert.doesNotMatch(prompt, /Aura Skincare/);
   assert.match(brandKnowledge(BRANDS.aura), /within 7 days.*[\s\S]*48 hours[\s\S]*2,500 rupees/, "Aura keeps the brief's numbers");
-  assert.match(greetingFor("hi-IN", "veda"), /वेदा हेयरकेयर/);
+  assert.match(greetingFor("hi-IN", "veda"), /ऑरा हेयरकेयर/);
   assert.match(greetingFor("en-IN", "aura"), /Aura Skincare/);
   assert.equal(greetingFor("xx-XX", "veda"), veda.greetings["en-IN"]);
   for (const brand of Object.values(BRANDS)) {
@@ -86,6 +89,6 @@ test("chat binds a new call to the requested brand, and the summary names it", (
       session: done.session,
       transcript: [{ role: "user", content: "Where is ORD-201?" }, { role: "assistant", content: reply.text }],
     }))).json();
-    assert.equal(record.brand, "Veda Haircare");
+    assert.equal(record.brand, "Aura Haircare");
     assert.equal(record.order_id, "ORD-201");
   }));

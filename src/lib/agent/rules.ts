@@ -13,6 +13,7 @@ import { describeOrder, findOrder, type ReturnFacts, type ToolContext } from "./
 
 const ORDER_INTENTS: Intent[] = ["ORDER_TRACKING", "CANCELLATION", "RETURN_REQUEST", "DAMAGED_PRODUCT"];
 const WORD_NUMBERS: Record<string, number> = { ten: 10, eleven: 11, twelve: 12, fifteen: 15, twenty: 20, thirty: 30, forty: 40, sixty: 60, ninety: 90 };
+const rupees = (value: number) => `${value.toLocaleString("en-IN")} rupees`;
 
 export function parseReturnFacts(text: string, intent: Intent): ReturnFacts {
   const t = text.toLowerCase();
@@ -88,7 +89,15 @@ export function rulesReply(text: string, ctx: ToolContext, emit: Emit): TurnResu
 
   if (ORDER_INTENTS.includes(intent)) {
     const refersBack = /\b(it|that|this one|that order|this order|same order)\b/.test(t);
-    const id = ids[0] ?? (refersBack || session.pendingIntent ? session.lastOrder : undefined);
+    // A follow-up with no ID is about the last checked order, but only when it is the one
+    // order this call has actually mentioned. Never invent or reuse an unverified ID.
+    const ambiguous = !ids.length && !session.pendingIntent && ctx.mentionedIds.size > 1 && (refersBack || intent === "ORDER_TRACKING");
+    if (ambiguous) {
+      const list = [...ctx.mentionedIds].join(", ");
+      return say(`Happy to help with that. Which order do you mean: ${list}?`);
+    }
+    const remembered = session.lastOrder && ctx.mentionedIds.has(session.lastOrder) && ctx.mentionedIds.size === 1 ? session.lastOrder : undefined;
+    const id = ids[0] ?? (refersBack || session.pendingIntent ? session.lastOrder : remembered);
     if (!id) {
       const violation = intent === "RETURN_REQUEST" ? describedReturnViolation(text, brand) : null;
       if (violation) return say(violation);
@@ -113,15 +122,40 @@ export function rulesReply(text: string, ctx: ToolContext, emit: Emit): TurnResu
     return say(result.say ?? notFound);
   }
 
+  if (intent === "PRODUCT_QUESTION") {
+    const budget = /(?:under|below|upto|up to|budget(?: of)?|₹|rs\.?)\s*₹?\s*(\d{2,5})/.exec(t);
+    const skin = /\b(oily|dry|sensitive|combination|normal)\b/.exec(t)?.[1];
+    const concern = /\b(dryness|dullness|dull|oil control|acne|blemish\w*|sensitivity|hydration|sun protection|hair fall|dandruff|frizz|brightening)\b/.exec(t)?.[1];
+    const result = runTool("find_products", {
+      query: text,
+      ...(skin ? { skin_type: skin } : {}),
+      ...(concern ? { concern } : {}),
+      ...(budget ? { max_price: Number(budget[1]) } : {}),
+    }, ctx, emit);
+    if (result.status !== "ok") {
+      return say(result.summary === "No catalogue match"
+        ? `I don't have a product in the ${brand.name} catalogue that matches that. I can check a different goal or budget, or our care team can help.`
+        : "Happy to help with products. What's the main goal, such as dryness, dullness or oil control, and do you have a budget in mind?");
+    }
+    const products = (result.output.products as { name: string; price_rupees: number; why: string; availability: string }[]) ?? [];
+    const [first, second] = products;
+    if (!first) return say("I couldn't find a matching product in the catalogue. Our care team can help you choose.");
+    const stock = first.availability === "In stock" ? "" : " It's currently out of stock.";
+    const also = second ? ` You could also consider the ${second.name} at ${rupees(second.price_rupees)}.` : "";
+    return say(`I'd suggest the ${first.name} at ${rupees(first.price_rupees)}. It's ${first.why}.${stock}${also} Would you like the usage details?`);
+  }
+
   if (intent === "HUMAN_HANDOFF") {
-    const result = runTool("escalate_to_human", { reason: "Customer asked to speak with a person.", ...(ids[0] ? { order_id: ids[0] } : {}) }, ctx, emit);
-    return say(`Of course. I've asked our care team to follow up with you, and your reference number is ${String(result.output.reference)}.`);
+    // Keep the caller's own words so the ticket is categorised correctly (damage, return, payment…).
+    const detail = text.length > 220 ? `${text.slice(0, 217)}…` : text;
+    const result = runTool("escalate_to_human", { reason: `Customer asked for a person: ${detail}`, ...(ids[0] ? { order_id: ids[0] } : {}) }, ctx, emit);
+    return say(`Of course. I've recorded a demo care-team ticket for you, reference ${String(result.output.reference)}. No human has been contacted yet, and I can't promise a callback time.`);
   }
   if (intent === "POLICY_QUESTION") return say(policyAnswer(text, brand));
-  if (intent === "OUT_OF_SCOPE") return say(`I'm sorry, I can only help with ${brand.name} orders and policies. Is there anything about your ${brand.shortName} order I can help with?`);
+  if (intent === "OUT_OF_SCOPE") return say(`I'm sorry, I can only help with ${brand.name} orders, products and policies. Is there anything about your ${brand.shortName} order I can help with?`);
   if (isGoodbye(text)) return say(`Thank you for calling ${brand.name}. Have a lovely day!`, true);
   if (/^(thanks|thank you|thank u|thx|dhanyavaad|dhanyavad|shukriya)\b/.test(t)) return say("You're very welcome! Is there anything else I can help you with?");
-  if (/^(hi|hello|hey|namaste|good (morning|afternoon|evening))\b/.test(t)) return say(`Hello! I can help with your ${brand.shortName} orders, returns, cancellations, delivery or Cash on Delivery. What would you like to know?`);
+  if (/^(hi|hello|hey|namaste|good (morning|afternoon|evening))\b/.test(t)) return say(`Hello! I can help with your ${brand.shortName} orders, returns, cancellations, delivery, Cash on Delivery or product questions. What would you like to know?`);
 
   recordOutcome(session, { intent: "GENERAL", order_id: null, resolution: "NEEDS_INFORMATION", detail: "Asked the customer to repeat an unclear request." });
   return say("I'm sorry, I didn't quite catch that. Could you say it again, or tell me your order ID?");

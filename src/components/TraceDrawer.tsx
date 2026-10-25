@@ -21,7 +21,7 @@ export function TraceDrawer({ call, open, onClose }: { call: VoiceCall; open: bo
   const guards = call.activity.filter(item => item.kind === "guardrail").length;
 
   return (
-    <Sheet open={open} onClose={onClose} side="right" width={420} title="Live agent trace">
+    <Sheet open={open} onClose={onClose} side="right" width={420} title="Aria Pulse">
       <div className="trace-stats">
         <div><strong>{avg === null ? "—" : formatMs(avg)}</strong><span>avg response</span></div>
         <div><strong>{tools}</strong><span>tool calls</span></div>

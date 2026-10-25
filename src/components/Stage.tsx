@@ -2,18 +2,39 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Hand, Keyboard, LoaderCircle, Mic, MicOff, Phone, PhoneOff, Play, Settings2, Square } from "lucide-react";
+import { Clock3, Hand, LoaderCircle, MessageSquare, Mic, MicOff, PhoneOff, Play, Settings2, ShieldCheck, Square, Zap } from "lucide-react";
 import type { VoiceCall } from "@/hooks/useVoiceCall";
 import { formatClock } from "@/lib/format";
 import { useBrowserVoices } from "@/hooks/useBrowserVoices";
 import { EDGE_TIP, isEdge, isNaturalVoice } from "@/lib/voice/browserVoices";
+import type { OrbProblem } from "@/lib/voice/orbState";
 import { brandById } from "@/data/brand";
-import { Orb } from "./Orb";
+import { VoiceMeter } from "./ui/VoiceMeter";
+
+const PROBLEM_STATUS: Record<Exclude<OrbProblem, null>, { title: string; detail: string }> = {
+  microphone: { title: "Microphone unavailable", detail: "Allow microphone access from the address bar, or continue by text." },
+  speech: { title: "Speech unavailable", detail: "Aria couldn't hear or speak just now. You can type your reply." },
+  connection: { title: "Connection problem", detail: "Aria couldn't reach the server. Please try again." },
+};
 
 function status(call: VoiceCall): { title: string; detail: string; tone: string } {
+  const concern = brandById(call.brand).concern;
   if (call.phase === "starting") return { title: "Connecting", detail: "Allow microphone access to begin", tone: "idle" };
   if (call.phase === "ending") return { title: "Wrapping up", detail: "Writing your call summary", tone: "thinking" };
-  if (call.phase !== "live") return { title: "Ready when you are", detail: "Start a call and speak naturally", tone: "idle" };
+  if (call.problem) return { ...PROBLEM_STATUS[call.problem], tone: "error" };
+  if (call.phase !== "live" && call.ended) return {
+    title: "Call ended",
+    detail: "Your call summary is ready. Start a new call whenever you like, or carry on by text.",
+    tone: "idle",
+  };
+  if (call.phase !== "live") return {
+    title: `Your ${concern}care support starts here`,
+    detail: `Connect with Aria for quick, convenient assistance with your orders and ${concern}care-related service queries.`,
+    tone: "idle",
+  };
+  if (call.interrupted && call.agentState === "Listening") {
+    return { title: "Interrupted", detail: call.textMode ? "Aria stopped. Type your message." : "Aria stopped. Go ahead, I'm listening.", tone: "interrupted" };
+  }
   switch (call.agentState) {
     case "Listening":
       return { title: "Listening", detail: call.textMode ? "Type your message" : call.muted ? "Microphone is muted" : "Go ahead, I'm listening", tone: "listening" };
@@ -130,18 +151,40 @@ export function Stage({ call }: { call: VoiceCall }) {
   const { phase } = call;
   const live = phase === "live";
   const current = status(call);
-  const orbState = live ? call.agentState : phase === "ending" ? "Thinking" : "Idle";
+  const careType = brandById(call.brand).concern === "skin" ? "skincare" : "haircare";
+  const settingsControl = (
+    <div className="settings-anchor">
+      <button className="round-btn settings-trigger" onClick={() => setSettingsOpen(open => !open)} aria-label="Voice settings" aria-expanded={settingsOpen} title="Voice settings">
+        <Settings2 size={18} />
+      </button>
+      <AnimatePresence>{settingsOpen && <Settings call={call} onClose={() => setSettingsOpen(false)} />}</AnimatePresence>
+    </div>
+  );
 
   return (
-    <section className="stage" aria-label="Call">
-      <div className="orb-wrap">
-        <Orb state={orbState} mic={call.micAnalyser} output={call.outputAnalyser} />
+    <section className="stage" data-phase={phase} aria-label="Aria introduction and voice call">
+      <div className="identity">
+        <h1>Hi there,<br />I&apos;m <span>Aria</span></h1>
+        <p>Your personal AI assistant for orders, returns, payments and all your {careType} questions.</p>
       </div>
 
-      <div className="identity">
-        <h1>Aria</h1>
-        <p>{brandById(call.brand).name} · AI care specialist</p>
+      <div className="hero-sparkle" aria-hidden="true">
+        <svg viewBox="0 0 40 40" focusable="false">
+          <defs>
+            <linearGradient id="aria-sparkle-gradient" x1="6" y1="5" x2="34" y2="35" gradientUnits="userSpaceOnUse">
+              <stop stopColor="#fff" />
+              <stop offset="1" stopColor="#b99ae9" />
+            </linearGradient>
+          </defs>
+          <path d="M20 3.5 23.6 16.4 36.5 20 23.6 23.6 20 36.5 16.4 23.6 3.5 20 16.4 16.4 20 3.5Z" fill="url(#aria-sparkle-gradient)" />
+        </svg>
       </div>
+
+      <ul className="intro-features" aria-label="Assistant features">
+        <li><span><Zap size={16} /></span>Quick answers</li>
+        <li><span><ShieldCheck size={16} /></span>Secure &amp; private</li>
+        <li><span><Clock3 size={16} /></span>24/7 support</li>
+      </ul>
 
       <div className="status" role="status" aria-live="polite" data-tone={current.tone}>
         <AnimatePresence mode="wait" initial={false}>
@@ -157,20 +200,27 @@ export function Stage({ call }: { call: VoiceCall }) {
               <span className="status-dot" />
               {current.title}
               {live && <span className="status-clock">{formatClock(call.elapsed)}</span>}
+              {live && <VoiceMeter analyser={call.agentState === "Speaking" ? call.outputAnalyser : call.micAnalyser} state={call.agentState} muted={call.muted} />}
             </span>
             {current.detail && <span className={`status-detail ${current.tone === "thinking" ? "shiny" : ""}`}>{current.detail}</span>}
           </motion.div>
         </AnimatePresence>
       </div>
 
+      {phase === "idle" && <span className="demo-pill">{call.ended ? "Demo complete" : "Try the Interactive Demo"}</span>}
+
       <div className="controls">
         {phase === "idle" && (
-          <>
+          <div className="intro-actions">
+            {settingsControl}
             <motion.button className="start-btn" onClick={() => void call.start()} disabled={!call.config} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}>
               <span className="start-glow" aria-hidden />
-              <Phone size={18} /> Start call
+              <Mic size={19} /> {call.ended ? "Start New Call" : "Start Voice Call"}
             </motion.button>
-          </>
+            <button className="text-btn" onClick={() => void call.start({ text: true })} disabled={!call.config}>
+              <MessageSquare size={17} /> Chat with Aria
+            </button>
+          </div>
         )}
         {phase === "starting" && (
           <button className="pill-btn ghost" onClick={() => void call.end()}>
@@ -209,19 +259,9 @@ export function Stage({ call }: { call: VoiceCall }) {
             <LoaderCircle size={17} className="spin" /> Wrapping up
           </button>
         )}
-        <div className="settings-anchor">
-          <button className="round-btn settings-trigger" onClick={() => setSettingsOpen(open => !open)} aria-label="Voice settings" aria-expanded={settingsOpen} title="Voice settings">
-            <Settings2 size={18} />
-          </button>
-          <AnimatePresence>{settingsOpen && <Settings call={call} onClose={() => setSettingsOpen(false)} />}</AnimatePresence>
-        </div>
+        {phase !== "idle" && settingsControl}
       </div>
 
-      {phase === "idle" && (
-        <button className="text-btn" onClick={() => void call.start({ text: true })} disabled={!call.config}>
-          <Keyboard size={15} /> No microphone? Chat by text
-        </button>
-      )}
     </section>
   );
 }

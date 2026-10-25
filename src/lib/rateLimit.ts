@@ -3,7 +3,7 @@
  * A production deployment would use a shared store (e.g. Redis) instead.
  */
 const windows = new Map<string, { count: number; resetAt: number }>();
-const limits = { chat: 120, tts: 80, transcription: 60, summary: 30 } as const;
+const limits = { chat: 120, tts: 80, transcription: 60, summary: 30, feedback: 20, tickets: 60, "tickets-admin": 120, "admin-login": 10 } as const;
 const HOUR = 60 * 60 * 1000;
 
 export function checkRateLimit(request: Request, kind: keyof typeof limits): boolean {

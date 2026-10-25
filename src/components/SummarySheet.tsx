@@ -2,11 +2,14 @@
 
 import { useState, type ReactNode } from "react";
 import { motion } from "motion/react";
-import { Check, Copy, FileJson, FileText, Phone, ShieldCheck } from "lucide-react";
+import { Check, Copy, Download, FileJson, FileText, Phone, ShieldCheck } from "lucide-react";
 import type { VoiceCall } from "@/hooks/useVoiceCall";
 import { downloadFile, formatClock, formatMs, humanize } from "@/lib/format";
-import type { CallSummary } from "@/types";
+import { RESULT_LABEL, recapMarkdown } from "@/lib/recap";
+import type { CallRecap, CallSummary, RecapAction } from "@/types";
 import { transcriptText } from "./Conversation";
+import { FeedbackPrompt } from "./FeedbackPrompt";
+import { TicketList } from "./TicketList";
 import { Sheet } from "./ui/Sheet";
 
 const TONE: Record<string, string> = { RESOLVED: "delivered", POLICY_DECLINED: "processing", NEEDS_INFORMATION: "transit", ESCALATED: "violet", UNRESOLVED: "cancelled", NO_CONVERSATION: "muted" };
@@ -50,6 +53,7 @@ function Overview({ summary }: { summary: CallSummary }) {
         ))}
       </div>
       <p className="summary-text">{summary.call_summary}</p>
+      {summary.recap && <RecapBlock recap={summary.recap} />}
       {summary.issues.length > 0 && (
         <div className="summary-block">
           <h3>Issues handled</h3>
@@ -63,7 +67,7 @@ function Overview({ summary }: { summary: CallSummary }) {
           </ul>
         </div>
       )}
-      {summary.actions_taken.length > 0 && (
+      {!summary.recap && summary.actions_taken.length > 0 && (
         <div className="summary-block">
           <h3>Actions taken</h3>
           <ul className="actions">{summary.actions_taken.map(action => <li key={action}>{action}</li>)}</ul>
@@ -75,6 +79,64 @@ function Overview({ summary }: { summary: CallSummary }) {
           ? "Built from the server's verified tool log."
           : `Written by ${summary.generated_by}; order IDs, actions and outcomes come from the verified tool log.`}
       </p>
+    </div>
+  );
+}
+
+const RESULT_TONE: Record<RecapAction["result"], string> = {
+  confirmed: "delivered",
+  failed: "cancelled",
+  unconfirmed: "transit",
+};
+
+/** Structured recap. Transaction rows are built from verified server results, not the narrative. */
+function RecapBlock({ recap }: { recap: CallRecap }) {
+  return (
+    <div className="summary-block recap">
+      <h3>Conversation recap</h3>
+      {recap.key_points.length > 0 && (
+        <div className="recap-group">
+          <h4>Key discussion points</h4>
+          <ul className="recap-list">{recap.key_points.map((point, i) => <li key={i}>{point}</li>)}</ul>
+        </div>
+      )}
+      {recap.attempted_actions.length > 0 && (
+        <div className="recap-group">
+          <h4>Attempted actions</h4>
+          <ul className="recap-actions">
+            {recap.attempted_actions.map((action, i) => (
+              <li key={`${action.action}-${i}`}>
+                <span className="recap-action-body">
+                  <span className="recap-action-title">
+                    {action.action}
+                    {action.order_id && <span className="mono"> · {action.order_id}</span>}
+                  </span>
+                  <small>{action.detail}</small>
+                </span>
+                <span className={`badge ${RESULT_TONE[action.result]}`}>{RESULT_LABEL[action.result]}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {recap.verified_outcomes.length > 0 && (
+        <div className="recap-group">
+          <h4>Verified outcomes</h4>
+          <ul className="recap-list">{recap.verified_outcomes.map((outcome, i) => <li key={i}>{outcome}</li>)}</ul>
+        </div>
+      )}
+      {recap.unresolved_issues.length > 0 && (
+        <div className="recap-group">
+          <h4>Unresolved issues</h4>
+          <ul className="recap-list">{recap.unresolved_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>
+        </div>
+      )}
+      {recap.next_steps.length > 0 && (
+        <div className="recap-group">
+          <h4>Next steps</h4>
+          <ul className="recap-list">{recap.next_steps.map((step, i) => <li key={i}>{step}</li>)}</ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -115,6 +177,11 @@ export function SummarySheet({ call, open, onClose }: { call: VoiceCall; open: b
       footer={
         <>
           <button className="chip-btn labelled" onClick={() => void copy()}>{copied ? <Check size={14} /> : <Copy size={14} />} {copied ? "Copied" : "Copy JSON"}</button>
+          {summary && (
+            <button className="chip-btn labelled" onClick={() => downloadFile(`${call.brand}-conversation-recap.md`, recapMarkdown(summary), "text/markdown;charset=utf-8")}>
+              <Download size={14} /> Recap
+            </button>
+          )}
           <button className="chip-btn labelled" onClick={() => downloadFile(`${call.brand}-call-summary.json`, json, "application/json")}><FileJson size={14} /> JSON</button>
           <button className="chip-btn labelled" onClick={() => downloadFile(`${call.brand}-call-transcript.txt`, transcriptText(call.entries), "text/plain;charset=utf-8")}><FileText size={14} /> Transcript</button>
           <span className="spacer" />
@@ -132,7 +199,13 @@ export function SummarySheet({ call, open, onClose }: { call: VoiceCall; open: b
               </button>
             ))}
           </div>
-          {tab === "overview" ? <Overview summary={summary} /> : <pre className="json" tabIndex={0}>{highlight(json)}</pre>}
+          {tab === "overview" ? (
+            <>
+              <Overview summary={summary} />
+              <TicketList tickets={call.tickets} />
+              {call.phase === "idle" && <FeedbackPrompt call={call} />}
+            </>
+          ) : <pre className="json" tabIndex={0}>{highlight(json)}</pre>}
         </>
       )}
     </Sheet>

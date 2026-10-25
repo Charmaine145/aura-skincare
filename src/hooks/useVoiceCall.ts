@@ -4,12 +4,23 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { readNdjson } from "@/lib/ndjson";
 import { commitDelay, createRecognition, type Recognition } from "@/lib/voice/recognition";
 import { VOICE_PROVIDER_LABEL, type ClipName } from "@/lib/voice/options";
-import { greetingFor, languageByCode, silenceLine } from "@/lib/voice/languages";
+import { greetingFor, languageByCode, LANGUAGES, silenceLine } from "@/lib/voice/languages";
 import { DEFAULT_BRAND, isBrandId, type BrandId } from "@/data/brand";
 import { EDGE_TIP, isEdge, isNaturalVoice, pickVoice } from "@/lib/voice/browserVoices";
 import { VoicePlayer, type VoiceEngine } from "@/lib/voice/player";
+import type { OrbProblem } from "@/lib/voice/orbState";
 import { analyserRms, VoiceActivityDetector, type VadMode } from "@/lib/voice/vad";
-import type { AgentState, AppConfig, CallSummary, ChatStreamEvent, ReplySource, ToolName, ToolStatus } from "@/types";
+import {
+  applyActionResult,
+  markActionUnresolved,
+  markTurnUnresolved,
+  reconcileCancelled,
+  recordAction,
+  startAction,
+  supersedeConfirmations,
+  type ActionRecord,
+} from "@/lib/agent/actionState";
+import type { AgentState, AppConfig, CallSummary, ChatStreamEvent, ReplySource, TicketView, ToolName, ToolStatus } from "@/types";
 
 /**
  * The call engine. Owns the microphone, speech recognition, the agent request, Aria's voice,
@@ -59,6 +70,10 @@ const MAX_CUSTOMER_TURNS = 60;
 /** Silence while Aria listens before she checks in, and then before she says goodbye. */
 const SILENCE_CHECK_MS = 12_000;
 const SILENCE_GOODBYE_MS = 10_000;
+/** A tool call should be answered in the same stream tick; longer means the stream stalled. */
+const ACTION_TIMEOUT_MS = 15_000;
+/** Never leave a turn spinning forever; nothing is retried automatically. */
+const REQUEST_TIMEOUT_MS = 45_000;
 const uid = () => crypto.randomUUID();
 
 const TOOL_STATUS: Record<ToolStatus, ActivityItem["status"]> = {
@@ -71,7 +86,9 @@ function thinkingLabel(name: ToolName, args: Record<string, unknown>): string {
     case "get_order_details": return id ? `Looking up ${id}` : "Looking up your order";
     case "cancel_order": return "Checking the cancellation policy";
     case "check_return_eligibility": return "Checking the return policy";
-    case "escalate_to_human": return "Contacting the care team";
+    case "escalate_to_human": return "Creating a demo ticket";
+    case "find_products": return "Checking the product catalogue";
+    default: return "Working on it";
   }
 }
 
@@ -89,8 +106,12 @@ export function useVoiceCall() {
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [interim, setInterim] = useState("");
   const [activity, setActivity] = useState<ActivityItem[]>([]);
+  /** Tool-backed actions, derived only from server events (never from Aria's wording). */
+  const [actions, setActions] = useState<ActionRecord[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [summary, setSummary] = useState<CallSummary | null>(null);
+  const [tickets, setTickets] = useState<TicketView[]>([]);
+  const [ended, setEnded] = useState(false);
   const [cancelled, setCancelled] = useState<string[]>([]);
   const [elapsed, setElapsed] = useState(0);
   const [micAnalyser, setMicAnalyser] = useState<AnalyserNode | null>(null);
@@ -100,6 +121,10 @@ export function useVoiceCall() {
   const [bargeIn, setBargeInState] = useState(true);
   const [previewing, setPreviewing] = useState(false);
   const [latencies, setLatencies] = useState<number[]>([]);
+  /** True briefly after a barge-in, so the orb can show the interruption without faking it. */
+  const [interrupted, setInterrupted] = useState(false);
+  /** A real failure (mic, speech, connection); auto-clears while the notice stays visible. */
+  const [problem, setProblemState] = useState<OrbProblem>(null);
 
   const configRef = useRef<AppConfig | null>(null);
   const phaseRef = useRef<CallPhase>("idle");
@@ -139,6 +164,10 @@ export function useVoiceCall() {
   const transcribeRequest = useRef<AbortController | null>(null);
   const restartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Per-action watchdogs, so a stalled stream can never leave a call looking pending forever. */
+  const actionTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const interruptedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const problemTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finalBuffer = useRef("");
   const submitRef = useRef<(text: string, via: "voice" | "text") => Promise<void>>(async () => {});
   const endRef = useRef<() => Promise<void>>(async () => {});
@@ -157,6 +186,38 @@ export function useVoiceCall() {
     stateRef.current = value;
     setAgentStateValue(value);
     setStatusLabel(label);
+  }, []);
+
+  /** Shows the interruption cue for a moment; a newer request's processing state overrides it. */
+  const flashInterrupted = useCallback(() => {
+    if (interruptedTimer.current) clearTimeout(interruptedTimer.current);
+    setInterrupted(true);
+    interruptedTimer.current = setTimeout(() => {
+      interruptedTimer.current = null;
+      setInterrupted(false);
+    }, 1500);
+  }, []);
+
+  const clearInterrupted = useCallback(() => {
+    if (interruptedTimer.current) clearTimeout(interruptedTimer.current);
+    interruptedTimer.current = null;
+    setInterrupted(false);
+  }, []);
+
+  /** Surfaces a genuine failure on the orb; the explanatory notice is not auto-cleared. */
+  const reportProblem = useCallback((kind: Exclude<OrbProblem, null>) => {
+    if (problemTimer.current) clearTimeout(problemTimer.current);
+    setProblemState(kind);
+    problemTimer.current = setTimeout(() => {
+      problemTimer.current = null;
+      setProblemState(null);
+    }, 6000);
+  }, []);
+
+  const clearProblem = useCallback(() => {
+    if (problemTimer.current) clearTimeout(problemTimer.current);
+    problemTimer.current = null;
+    setProblemState(null);
   }, []);
 
   const addEntry = useCallback((entry: Omit<TranscriptEntry, "id" | "timestamp">) => {
@@ -184,6 +245,17 @@ export function useVoiceCall() {
 
   const updateLog = useCallback((id: string, patch: Partial<ActivityItem>) => {
     setActivity(items => items.map(item => (item.id === id ? { ...item, ...patch } : item)));
+  }, []);
+
+  const clearActionTimer = useCallback((id: string) => {
+    const timer = actionTimers.current.get(id);
+    if (timer) clearTimeout(timer);
+    actionTimers.current.delete(id);
+  }, []);
+
+  const clearActionTimers = useCallback(() => {
+    for (const timer of actionTimers.current.values()) clearTimeout(timer);
+    actionTimers.current.clear();
   }, []);
 
   const warnOnce = useRef(new Set<string>());
@@ -235,6 +307,7 @@ export function useVoiceCall() {
     if (!mimeType) {
       textModeRef.current = true;
       setTextMode(true);
+      reportProblem("speech");
       setNotice({ tone: "warning", text: "This browser can't record audio for transcription. Please type your questions instead." });
       return;
     }
@@ -271,13 +344,14 @@ export function useVoiceCall() {
       } catch (error) {
         if (!alive(generation) || controller.signal.aborted) return;
         setInterim("");
+        reportProblem("speech");
         setNotice({ tone: "info", text: error instanceof Error ? error.message : "I couldn't hear that clearly. Please repeat." });
         setAgentState("Listening");
         startCapture();
       }
     };
     current.start(250);
-  }, [alive, setAgentState]);
+  }, [alive, reportProblem, setAgentState]);
 
   const listen = useCallback(() => {
     if (phaseRef.current !== "live" || mutedRef.current || textModeRef.current || stateRef.current !== "Listening") return;
@@ -297,10 +371,11 @@ export function useVoiceCall() {
     endAfterSpeaking.current = false;
     markInterrupted();
     player().stop();
+    flashInterrupted();
     setAgentState("Listening");
     log({ kind: "voice", title: "Barge-in", detail: "You started talking, so Aria stopped and listened.", status: "ok" });
     listen();
-  }, [listen, log, markInterrupted, player, setAgentState]);
+  }, [flashInterrupted, listen, log, markInterrupted, player, setAgentState]);
 
   const runVad = useCallback((analyser: AnalyserNode) => {
     const data = new Uint8Array(analyser.fftSize);
@@ -385,9 +460,12 @@ export function useVoiceCall() {
       },
     });
     if (!alive(generation) || line !== speechEpoch.current) return;
-    if (!result.completed) noticeOnce("Aria's audio couldn't play in this browser. Her replies are still shown in the transcript.");
+    if (!result.completed) {
+      reportProblem("speech");
+      noticeOnce("Aria's audio couldn't play in this browser. Her replies are still shown in the transcript.");
+    }
     afterSpeaking(generation);
-  }, [afterSpeaking, alive, engine, noticeOnce, pauseListening, player, setAgentState]);
+  }, [afterSpeaking, alive, engine, noticeOnce, pauseListening, player, reportProblem, setAgentState]);
 
   const speakGreeting = useCallback(async (generation: number) => {
     if (engine() !== "browser" && languageRef.current === "en-IN") {
@@ -419,9 +497,14 @@ export function useVoiceCall() {
     player().stop();
     pauseListening();
     setNotice(null);
+    clearInterrupted();
+    clearProblem();
 
     const generation = epoch.current;
     turn.current++;
+    const currentTurn = turn.current;
+    // An unanswered confirmation from an earlier turn can never complete now.
+    setActions(items => supersedeConfirmations(items, currentTurn));
     const startedAt = via === "voice" && performance.now() - lastSpeechAt.current < 4000 ? lastSpeechAt.current : performance.now();
     addEntry({ role: "user", content, via });
     log({ kind: "heard", title: via === "voice" ? `Heard · ${speechPathRef.current === "gemini" ? "Gemini transcription" : "browser speech recognition"}` : "Typed message", detail: content });
@@ -429,6 +512,11 @@ export function useVoiceCall() {
 
     const controller = new AbortController();
     request.current = controller;
+    let timedOut = false;
+    const requestTimer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, REQUEST_TIMEOUT_MS);
     const tools: ToolName[] = [];
     let filler: Promise<boolean> | undefined;
     let modelLog: string | undefined;
@@ -455,6 +543,13 @@ export function useVoiceCall() {
             tools.push(event.name);
             log({ id: event.id, kind: "tool", title: event.name, detail: formatArgs(event.args), status: "running" });
             setStatusLabel(thinkingLabel(event.name, event.args));
+            setActions(items => recordAction(items, startAction(event, currentTurn)));
+            // Tools run synchronously on the server; a missing result means the stream stalled.
+            clearActionTimer(event.id);
+            actionTimers.current.set(event.id, setTimeout(() => {
+              actionTimers.current.delete(event.id);
+              setActions(items => markActionUnresolved(items, event.id));
+            }, ACTION_TIMEOUT_MS));
             // A lookup needs another model round; cover the gap like a human agent would.
             // The clip is English, so it would jar in a Hindi or Tamil call.
             if (!filler && configRef.current?.mode === "ai" && engine() !== "browser" && languageRef.current === "en-IN" && (event.name === "get_order_details" || event.name === "escalate_to_human")) {
@@ -462,7 +557,9 @@ export function useVoiceCall() {
             }
             break;
           case "tool_result":
+            clearActionTimer(event.id);
             updateLog(event.id, { status: TOOL_STATUS[event.status], detail: event.summary, ms: event.ms });
+            setActions(items => applyActionResult(items, event));
             break;
           case "guardrail":
             log({ kind: "guardrail", title: event.rule, detail: event.detail, status: "warn" });
@@ -484,9 +581,19 @@ export function useVoiceCall() {
         }
       }
       if (!reply || !done) throw new Error("The connection dropped before Aria could answer. Please try again.");
+      // The stream is complete; Aria's spoken reply must not count against the request timeout.
+      clearTimeout(requestTimer);
       request.current = null;
+      clearActionTimers();
+      // A completed turn must never leave a call pending; the signed session is then the final
+      // authority for a completed cancellation.
+      setActions(items => reconcileCancelled(
+        markTurnUnresolved(items, currentTurn, "The turn finished without a result for this check. Nothing is confirmed."),
+        done.cancelled,
+      ));
       sessionToken.current = done.session;
       setCancelled(done.cancelled);
+      setTickets(done.tickets ?? []);
       endAfterSpeaking.current = done.endCall;
 
       const replyAt = performance.now();
@@ -509,17 +616,31 @@ export function useVoiceCall() {
         },
       });
     } catch (error) {
-      if (!alive(generation) || controller.signal.aborted) return;
+      if (!alive(generation)) return;
+      clearActionTimers();
+      if (controller.signal.aborted && !timedOut) return;
       player().stop();
-      const message = error instanceof Error ? error.message : "Something went wrong. Please try again.";
+      reportProblem("connection");
+      const message = timedOut
+        ? "Aria took too long to check that. Nothing has been changed, so please try again."
+        : error instanceof Error ? error.message : "Something went wrong. Please try again.";
+      // A failed or timed-out turn can never confirm a transaction.
+      setActions(items => markTurnUnresolved(
+        items,
+        currentTurn,
+        timedOut
+          ? "The check timed out before the server returned a result. Nothing is confirmed."
+          : "The connection dropped before this finished. Nothing is confirmed.",
+      ));
       setNotice({ tone: "error", text: message });
-      log({ kind: "error", title: "Turn failed", detail: message, status: "error" });
+      log({ kind: "error", title: timedOut ? "Check timed out" : "Turn failed", detail: message, status: "error" });
       setAgentState("Listening");
       listen();
     } finally {
+      clearTimeout(requestTimer);
       if (request.current === controller) request.current = null;
     }
-  }, [addEntry, alive, engine, listen, log, markInterrupted, pauseListening, player, setAgentState, speak, updateEntry, updateLog]);
+  }, [addEntry, alive, clearActionTimer, clearActionTimers, clearInterrupted, clearProblem, engine, listen, log, markInterrupted, pauseListening, player, reportProblem, setAgentState, speak, updateEntry, updateLog]);
 
   useEffect(() => {
     submitRef.current = send;
@@ -562,6 +683,7 @@ export function useVoiceCall() {
         } else {
           textModeRef.current = true;
           setTextMode(true);
+          reportProblem("speech");
           setNotice({ tone: "warning", text: "Speech recognition is unavailable here. You can continue the call by typing." });
         }
       }
@@ -577,7 +699,7 @@ export function useVoiceCall() {
       }
       restartTimer.current = setTimeout(listen, 200);
     };
-  }, [listen, log]);
+  }, [listen, log, reportProblem]);
 
   const start = useCallback(async ({ text = false, firstMessage }: { text?: boolean; firstMessage?: string } = {}) => {
     const cfg = configRef.current;
@@ -593,10 +715,16 @@ export function useVoiceCall() {
     transcript.current = [];
     setEntries([]);
     setActivity([]);
+    clearActionTimers();
+    setActions([]);
     setSummary(null);
+    setTickets([]);
+    setEnded(false);
     setCancelled([]);
     setElapsed(0);
     setNotice(null);
+    clearInterrupted();
+    clearProblem();
     latencyLog.current = [];
     setLatencies([]);
     warnOnce.current.clear();
@@ -642,6 +770,7 @@ export function useVoiceCall() {
         teardownAudio();
         setPhase("idle");
         const blocked = error instanceof DOMException && (error.name === "NotAllowedError" || error.name === "SecurityError");
+        reportProblem(error instanceof DOMException ? "microphone" : "speech");
         setNotice({
           tone: "error",
           text: blocked
@@ -670,9 +799,11 @@ export function useVoiceCall() {
     }
     setAgentState("Thinking", "Connecting");
     await speakGreeting(generation);
-  }, [addEntry, engine, inputEngine, log, noticeOnce, player, runVad, send, setAgentState, setPhase, speakGreeting, teardownAudio, wireRecognition]);
+  }, [addEntry, clearActionTimers, clearInterrupted, clearProblem, engine, inputEngine, log, noticeOnce, player, reportProblem, runVad, send, setAgentState, setPhase, speakGreeting, teardownAudio, wireRecognition]);
 
   const end = useCallback(async () => {
+    clearInterrupted();
+    clearProblem();
     if (phaseRef.current === "starting") {
       epoch.current++;
       teardownAudio();
@@ -686,6 +817,9 @@ export function useVoiceCall() {
     speechEpoch.current++;
     request.current?.abort();
     request.current = null;
+    // An interrupted turn cannot have completed an action.
+    clearActionTimers();
+    setActions(items => markTurnUnresolved(items, turn.current, "The call ended before this finished. The outcome is unknown."));
     transcribeRequest.current?.abort();
     player().stop();
     teardownAudio();
@@ -702,6 +836,7 @@ export function useVoiceCall() {
         body: JSON.stringify({
           session: sessionToken.current,
           transcript: transcript.current.map(({ role, content }) => ({ role, content })),
+          channel: textModeRef.current ? "text" : "voice",
           metrics: { duration_seconds: durationSeconds, avg_response_ms: avg },
         }),
       });
@@ -714,8 +849,9 @@ export function useVoiceCall() {
       setNotice({ tone: "warning", text: "The summary couldn't be generated. Your transcript is still available to download." });
     } finally {
       setPhase("idle");
+      setEnded(true);
     }
-  }, [log, markInterrupted, player, setAgentState, setPhase, teardownAudio, updateLog]);
+  }, [clearActionTimers, clearInterrupted, clearProblem, log, markInterrupted, player, setAgentState, setPhase, teardownAudio, updateLog]);
 
   useEffect(() => {
     endRef.current = end;
@@ -753,11 +889,19 @@ export function useVoiceCall() {
   }, [player]);
 
   const setLanguage = useCallback((code: string) => {
+    // A call stays in the language it started in; the selector is only enabled between calls.
+    if (phaseRef.current === "live" || phaseRef.current === "ending") return;
+    if (!LANGUAGES.some(item => item.code === code)) return;
     previewEpoch.current++;
     player().stop();
     setPreviewing(false);
     languageRef.current = code;
     setLanguageState(code);
+    try {
+      localStorage.setItem("aria-language", code);
+    } catch {
+      // Storage can be blocked; the choice still applies to this session.
+    }
   }, [player]);
 
   /** Which brand the next call is for. Fixed during a call; returns false if a call is running. */
@@ -766,11 +910,29 @@ export function useVoiceCall() {
     previewEpoch.current++;
     player().stop();
     setPreviewing(false);
+    if (brandRef.current !== id) {
+      transcript.current = [];
+      setEntries([]);
+      setActivity([]);
+      clearActionTimers();
+      setActions([]);
+      setSummary(null);
+      setTickets([]);
+      setEnded(false);
+      setCancelled([]);
+      setElapsed(0);
+      setNotice(null);
+      clearInterrupted();
+      clearProblem();
+      latencyLog.current = [];
+      setLatencies([]);
+      sessionToken.current = undefined;
+      turn.current = 0;
+    }
     brandRef.current = id;
     setBrandState(id);
-    setCancelled([]);
     return true;
-  }, [player]);
+  }, [clearActionTimers, clearInterrupted, clearProblem, player]);
 
   const setBargeIn = useCallback((value: boolean) => {
     bargeInRef.current = value;
@@ -804,6 +966,20 @@ export function useVoiceCall() {
 
   const dismissNotice = useCallback(() => setNotice(null), []);
 
+  /** Satisfaction feedback for the finished call. Resolves only after the server confirms a save. */
+  const submitFeedback = useCallback(async (rating: number, comment: string) => {
+    const token = sessionToken.current;
+    if (!token) throw new Error("Start a call before leaving feedback.");
+    const response = await fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: token, rating, comment: comment.slice(0, 500) }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.saved) throw new Error(data.error || "Feedback couldn't be saved. Please try again.");
+    return { rating: data.rating as number };
+  }, []);
+
   // ------------------------------------------------------------------ effects
 
   useEffect(() => {
@@ -812,6 +988,15 @@ export function useVoiceCall() {
     if (isBrandId(fromUrl)) {
       brandRef.current = fromUrl;
       setBrandState(fromUrl);
+    }
+    try {
+      const saved = localStorage.getItem("aria-language");
+      if (saved && LANGUAGES.some(item => item.code === saved)) {
+        languageRef.current = saved;
+        setLanguageState(saved);
+      }
+    } catch {
+      // Private mode or blocked storage: keep the default.
     }
     fetch("/api/config")
       .then(response => {
@@ -825,7 +1010,10 @@ export function useVoiceCall() {
         voiceRef.current = initial;
         setVoiceState(initial);
       })
-      .catch(() => setNotice({ tone: "error", text: "Couldn't reach Aria's server. Please refresh the page." }));
+      .catch(() => {
+        reportProblem("connection");
+        setNotice({ tone: "error", text: "Couldn't reach Aria's server. Please refresh the page." });
+      });
     window.speechSynthesis?.getVoices();
     return () => {
       // Unmount (or a dev hot reload): stop everything and keep refs and visible state in agreement.
@@ -834,13 +1022,18 @@ export function useVoiceCall() {
       stateRef.current = "Idle";
       setPhaseState("idle");
       setAgentStateValue("Idle");
+      if (interruptedTimer.current) clearTimeout(interruptedTimer.current);
+      interruptedTimer.current = null;
+      if (problemTimer.current) clearTimeout(problemTimer.current);
+      problemTimer.current = null;
+      clearActionTimers();
       request.current?.abort();
       request.current = null;
       transcribeRequest.current?.abort();
       teardownAudio();
       playerRef.current?.dispose();
     };
-  }, [teardownAudio]);
+  }, [clearActionTimers, reportProblem, teardownAudio]);
 
   useEffect(() => {
     if (phase !== "live") return;
@@ -892,8 +1085,11 @@ export function useVoiceCall() {
     entries,
     interim,
     activity,
+    actions,
     notice,
     summary,
+    tickets,
+    ended,
     cancelled,
     elapsed,
     micAnalyser,
@@ -905,6 +1101,8 @@ export function useVoiceCall() {
     bargeIn,
     previewing,
     latencies,
+    interrupted,
+    problem,
     start,
     end,
     send,
@@ -918,6 +1116,7 @@ export function useVoiceCall() {
     setBargeIn,
     previewVoice,
     dismissNotice,
+    submitFeedback,
   };
 }
 

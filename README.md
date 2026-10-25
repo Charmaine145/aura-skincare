@@ -1,12 +1,12 @@
 # Aria · AI voice customer care for Aura Skincare
 
-Aria is a browser-based voice support agent for **Aura Skincare**, a fictional Indian D2C skincare brand (and, to show multi-brand support, a second one: **Veda Haircare**). Press **Start call**, talk to her through your microphone, and she answers out loud in a natural Indian voice. She looks up orders with function calling, enforces the brand's policies in code, recovers gracefully from unclear audio and unknown order IDs, and writes a structured JSON summary when you hang up.
+Aria is a browser-based voice support agent for **Aura Skincare**, a fictional Indian D2C skincare brand (and, to show multi-brand support, a second one: **Aura Haircare**). Press **Start call**, talk to her through your microphone, and she answers out loud in a natural Indian voice. She looks up orders with function calling, enforces the brand's policies in code, recovers gracefully from unclear audio and unknown order IDs, and writes a structured JSON summary when you hang up.
 
 | | |
 | --- | --- |
 | **Live app** | _add your deployed URL_ |
 | **Demo video** | _add your video link_ |
-| **Author** | Aditya Acharya · [LinkedIn](https://www.linkedin.com/in/adityaacharyax/) |
+| **Author** | Charmaine Joy · [LinkedIn](https://www.linkedin.com/in/charmaine-joy/) |
 
 > **Approach, in three sentences.** Aria is a modular voice pipeline in one Next.js app: browser speech recognition feeds a Gemini agent that uses native function calling, and every tool call passes through a server-side policy engine that decides order access, cancellations and returns in code and words its refusals verbatim. Replies are spoken with Microsoft's natural Indian voices (free, via the service behind Edge's Read Aloud, with Sarvam and the browser's voice as fallbacks), plain status questions are answered from the verified order record without a model call, and each call ends with a JSON summary whose facts come from the verified tool log. A live trace on the page shows every tool call, guardrail and latency, so you can see exactly why Aria said what she said.
 
@@ -38,11 +38,18 @@ No microphone? Tap a suggestion card, an order's *Track / Return / Cancel*, or t
 
 - **The orb**: a WebGL fluid sphere whose colour follows Aria's state (sage idle, emerald listening, amber thinking, violet speaking) and whose surface moves with the real audio: your mic while she listens, her own voice while she speaks. Below it, the live state (*Listening / Thinking / Speaking*) with detail such as "Looking up ORD-101", the call timer and the controls: start/end, mute, interrupt, and voice settings.
 - **Conversation**: replies drift in word by word, with response time, the tools used, a `policy` tag on server-decided replies and an `instant` tag on replies answered from the order record without a model call.
-- **Test orders**: the current brand's sample orders. For Aura, the brief's three (ORD-101 to ORD-103) first, then five extras that reach the remaining policy paths: ORD-104 shipped (can't cancel, can't return yet), ORD-105 delivered 3 days ago (return window open), ORD-106 delivered yesterday (damage within 48 hours), ORD-107 at ₹3,200 (above the Cash on Delivery limit) and ORD-108 delivered exactly 7 days ago (last day to return). Each shows customer, courier, tracking and notes, plus one-tap questions. Status updates live when you cancel. Veda Haircare has its own five (ORD-201 to ORD-205), placed where its policies differ from Aura's.
+- **Test orders**: the current brand's sample orders. For Aura Skincare, the brief's three (ORD-101 to ORD-103) first, then five extras that reach the remaining policy paths: ORD-104 shipped (can't cancel, can't return yet), ORD-105 delivered 3 days ago (return window open), ORD-106 delivered yesterday (damage within 48 hours), ORD-107 at ₹3,200 (above the Cash on Delivery limit) and ORD-108 delivered exactly 7 days ago (last day to return). Each shows customer, courier, tracking and notes, plus one-tap questions. Status updates live when you cancel. Aura Haircare has its own five (ORD-201 to ORD-205), placed where its policies differ from Aura Skincare.
 - **Trace** (header): a drawer with the live agent trace. It shows what Aria heard, each tool call and result, guardrails that fired, model rounds and time to first audio.
 - **Call summary**: opens when you hang up, with intent, order, resolution and sentiment, the issues handled and actions taken, and highlighted JSON with copy and download.
+- **Follow-up**: after the summary, callers can optionally rate the call and leave a short comment. Escalations create demo support tickets with a reference and status that can be checked from the summary.
 - **How it works** (header): the pipeline, guardrails and the current brand's policies at a glance.
-- **Brand picker** (the wordmark in the header): switch between Aura Skincare and Veda Haircare between calls.
+- **Brand picker** (the wordmark in the header): switch between Aura Skincare and Aura Haircare between calls.
+
+### Demo support operations
+
+Open `/admin` to view demo support analytics: conversation and resolution counts, verified tool outcomes, response times, satisfaction ratings, and tickets. Tickets can be moved between **Open**, **In Progress**, **Resolved** and **Closed**. In local development, the dashboard is available without a token; in production, set `ADMIN_TOKEN` to enable its login. The dashboard does not expose transcripts or contact details.
+
+Summaries, verified turns, tickets and feedback are stored in a small file-backed demo store at `.data/aria-demo.json` by default. Set `ARIA_DATA_DIR` to a writable persistent directory when deploying if records need to survive server restarts or be shared between instances. On hosts without persistent writable storage, records may not persist; the agent's core call and summary behavior still works. These are sample/demo records, and escalations do not contact a human agent.
 
 ---
 
@@ -72,10 +79,10 @@ Each optional item, and the decision behind it:
 | **Multiple tools** | `get_order_details`, `cancel_order`, `check_return_eligibility`, `escalate_to_human`. | Each policy decision lives in its own tool, so it is computed and worded by the server rather than the model. |
 | **Ambiguous requests** | No ID: Aria asks for it. Several orders discussed, then "cancel it": she asks which one. An ID the caller never said: the tool call is blocked. IDs spoken as words or in Indian digits ("ഒന്ന് പൂജ്യം ഏഴ്", "൧൦൭") are understood. | Asking costs one short turn; guessing the wrong order costs a wrong cancellation. Cancelling also needs an explicit yes to a question that names the order. |
 | **Improved call experience** | Live state orb, trace drawer, instant filler while looking things up, natural Indian voices in 9 languages, a check-in when the caller goes quiet (12 s), then a polite goodbye (10 s later). | A phone agent doesn't hold a silent line forever, and the caller shouldn't hear dead air while a lookup runs. |
-| **Multi-brand** | **Aura Skincare** and **Veda Haircare** run on one agent: pick one in the header or share `/?brand=veda`. Each brand has its own facts, policy numbers, orders, greetings (in all 10 languages) and care-team reference prefix. | Real support platforms serve many brands, so policy is data, not code: the same engine gives Veda's 10-day returns, 72-hour damage window and ₹5,000 COD limit. A call is bound to its brand in the signed session, so it can't see or act on another brand's orders. |
+| **Multi-brand** | **Aura Skincare** and **Aura Haircare** run on one agent: pick one in the header or share `/?brand=veda`. Each brand has its own facts, policy numbers, orders, greetings (in all 10 languages) and care-team reference prefix. | Real support platforms serve many brands, so policy is data, not code: the same engine gives Aura Haircare's 10-day returns, 72-hour damage window and ₹5,000 COD limit. A call is bound to its brand in the signed session, so it can't see or act on another brand's orders. |
 | **Very low latency** | A plain "Where is ORD-101?" is answered from the verified record with **no model call** (tagged *instant*): about 0.1 s to the reply plus ~0.4 s of voice, instead of 2–5 s. Voice connections are kept open and re-warmed when a call starts. | The most common call needs no judgement. Anything with a complaint, a second question or a request ("it's late", "and can I pay cash?") still goes to the model. |
 
-**Try multi-brand:** switch to Veda in the header and ask *"Can I return ORD-202?"* (delivered 9 days ago): Veda's 10-day window allows it, where Aura's 7-day window would not. *"Is Cash on Delivery available for ORD-204?"* (₹4,200) is yes at Veda, no at Aura.
+**Try multi-brand:** switch to Aura Haircare in the header and ask *"Can I return ORD-202?"* (delivered 9 days ago): Aura Haircare's 10-day window allows it, where Aura Skincare's 7-day window would not. *"Is Cash on Delivery available for ORD-204?"* (₹4,200) is yes for Aura Haircare, no for Aura Skincare.
 
 **Considered and left out:** identity checks before sharing order details (a real deployment needs them, but they would get in the way of evaluating the brief's scenarios), and streaming the model's reply sentence by sentence (replies are one or two sentences, so it would save little once the common case skips the model entirely).
 
@@ -225,6 +232,8 @@ src/
     page.tsx, layout.tsx, globals.css      UI shell, fonts, design tokens (light + dark)
     api/chat/route.ts                      one turn → NDJSON events (tool calls, guardrails, reply, session)
     api/summary/route.ts                   post-call JSON (Gemini + verified facts, rules fallback)
+    api/feedback/route.ts, api/tickets/route.ts  optional ratings and demo ticket status
+    api/admin/login/route.ts               protected dashboard login
     api/tts-stream/route.ts, api/tts/route.ts   Aria's voice from the provider chain (MP3 or PCM); GET warms a voice at call start
     api/transcribe/route.ts                server speech-to-text fallback
     api/config/route.ts                    which engines are available (never exposes keys)
@@ -237,13 +246,13 @@ src/
     intents.ts      intent, yes/no and goodbye detection (English + Hinglish)
   lib/orders/orderIds.ts   spoken/typed order-ID extraction (English and Indian digits and number words)
   lib/voice/               tts.ts (Edge → Azure → Sarvam → OpenAI → Gemini chain), languages, player (fades + jitter buffer), recognition, VAD
-  lib/summary.ts, session.ts, rateLimit.ts, validation.ts, audio.ts
+  lib/summary.ts, session.ts, rateLimit.ts, validation.ts, audio.ts, store.ts, analytics.ts
   hooks/useVoiceCall.ts    the browser call engine
-  components/              WebGL orb, stage, conversation, test orders, trace drawer, summary sheet, how-it-works (Motion animations)
+  components/              WebGL orb, stage, conversation, test orders, trace drawer, summary sheet, feedback prompt, ticket list, admin dashboard
   data/brand.ts, orders.ts brands (facts, policy numbers, greetings) and their sample orders
 public/audio/gemini/       pre-recorded greeting and filler clips for the Gemini voices
 scripts/                   generate-voice-clips.ts, check-gemini.ts (live smoke test)
-tests/                     79 tests: order IDs, policy tools, brands, agent loop (mocked Gemini), summary, routes, TTS providers, languages, voice
+tests/                     unit and route coverage for order IDs, policy tools, brands, agent loop, summaries, TTS providers, languages and voice
 ```
 
 ## Run locally
@@ -256,7 +265,7 @@ cp .env.example .env.local      # PowerShell: Copy-Item .env.example .env.local
 npm run dev                     # http://localhost:3000
 ```
 
-Add `GEMINI_API_KEY` to `.env.local` for the full AI experience. Without any key, the app runs in the labelled rule-based demo mode. Microphone access works on `localhost` and HTTPS only.
+Add `GEMINI_API_KEY` to `.env.local` for the full AI experience. Without any key, the app runs in the labelled rule-based demo mode. Set `ADMIN_TOKEN` to protect `/admin` locally; without it, the dashboard is open only in non-production. Set `ARIA_DATA_DIR` if you want the demo records stored outside the default `.data` directory. Microphone access works on `localhost` and HTTPS only.
 
 ```sh
 npm test            # unit + route tests (no network: providers are mocked)
@@ -276,11 +285,13 @@ npx tsx scripts/generate-voice-clips.ts  # re-record the Gemini greeting/filler 
    | `GEMINI_API_KEY` | Yes | Your Gemini key (without it the app runs in the rule-based demo mode). |
    | `SESSION_SECRET` | Recommended | A long random string, e.g. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Without it a secret is derived from the Gemini key, so it works, but a dedicated secret can be rotated on its own. |
    | `SARVAM_API_KEY` + `ENABLE_PREMIUM_VOICE=1` | Optional | Backup voice if Edge's service fails, and the voice for Punjabi. Set `SARVAM_TTS_MODEL=bulbul:v3`. |
+   | `ADMIN_TOKEN` | Optional | Enables and protects the `/admin` dashboard in production. |
+   | `ARIA_DATA_DIR` | Optional | Path to a writable persistent volume for summaries, verified turns, demo tickets and feedback. |
 
    The Edge voices need nothing. Every other setting has a working default (see `.env.example`).
-3. Deploy, then open the HTTPS URL (microphones only work over HTTPS) and allow the microphone. Add `/?brand=veda` for Veda Haircare.
+3. Deploy, then open the HTTPS URL (microphones only work over HTTPS) and allow the microphone. Add `/?brand=veda` for Aura Haircare.
 
-**Serverless notes.** Every call's state travels in a signed token, so any instance can serve any turn. Voice connections are kept per instance and re-warmed at call start with `after()`; one that died while the function was frozen gets 3 s before a fresh connection takes over. Rate limits and the clip cache are per instance, which is fine at demo scale (see *1,000 conversations a day* below for what changes in production).
+**Serverless notes.** Every call's state travels in a signed token, so any instance can serve any turn. Voice connections are kept per instance and re-warmed at call start with `after()`; one that died while the function was frozen gets 3 s before a fresh connection takes over. Rate limits and the clip cache are per instance, which is fine at demo scale (see *1,000 conversations a day* below for what changes in production). The file-backed demo store needs a writable persistent volume to retain records across serverless instances and deployments; without one, the dashboard may show no saved records.
 
 ## Known limitations
 

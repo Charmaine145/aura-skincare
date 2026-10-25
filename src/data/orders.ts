@@ -32,7 +32,7 @@ export const orders: Order[] = [
     product: "Green Tea Face Wash + Toner",
     value: 850,
     status: "Processing",
-    notes: "Ordered 3 hours ago. Eligible for cancellation",
+    notes: "Placed 3 hours ago · Cancellation is currently available",
     ordered_hours_ago: 3,
   },
   // Extra fixtures, one per policy path the brief's three orders don't reach.
@@ -45,7 +45,7 @@ export const orders: Order[] = [
     status: "Shipped",
     courier: "Delhivery",
     tracking_id: "DL-553817",
-    notes: "Shipped yesterday, expected in 2 to 3 days",
+    notes: "Dispatched yesterday · Estimated arrival in 2–3 days",
   },
   {
     // Inside the 7-day return window: Aria must ask about its condition.
@@ -78,7 +78,7 @@ export const orders: Order[] = [
     product: "Complete Night Care Kit",
     value: 3200,
     status: "Processing",
-    notes: "Ordered 1 hour ago. Eligible for cancellation",
+    notes: "Placed 1 hour ago · Eligible for cancellation",
     ordered_hours_ago: 1,
   },
   {
@@ -96,7 +96,7 @@ export const orders: Order[] = [
 ];
 
 /**
- * Veda Haircare, the second brand. Its orders sit where Veda's policies differ from Aura's, so the
+ * Aura Haircare, the second brand. Its orders sit where its policies differ from Aura Skincare's, so the
  * same question gets a different, correct answer depending on the brand the call is for.
  */
 export const vedaOrders: Order[] = [
