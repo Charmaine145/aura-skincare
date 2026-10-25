@@ -2,7 +2,6 @@
 
 Aria is a browser-based voice support agent for **Aura Skincare**, a fictional Indian D2C skincare brand (and, to show multi-brand support, a second one: **Aura Haircare**). Press **Start call**, talk to her through your microphone, and she answers out loud in a natural Indian voice. She looks up orders with function calling, enforces the brand's policies in code, recovers gracefully from unclear audio and unknown order IDs, and writes a structured JSON summary when you hang up.
 
-| | |
 | **Author** | Charmaine Joy · [LinkedIn](https://www.linkedin.com/in/charmaine-joy/) |
 
 > **Approach, in three sentences.** Aria is a modular voice pipeline in one Next.js app: browser speech recognition feeds a Gemini agent that uses native function calling, and every tool call passes through a server-side policy engine that decides order access, cancellations and returns in code and words its refusals verbatim. Replies are spoken with Microsoft's natural Indian voices (free, via the service behind Edge's Read Aloud, with Sarvam and the browser's voice as fallbacks), plain status questions are answered from the verified order record without a model call, and each call ends with a JSON summary whose facts come from the verified tool log. A live trace on the page shows every tool call, guardrail and latency, so you can see exactly why Aria said what she said.
