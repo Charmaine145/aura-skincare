@@ -68,7 +68,7 @@ Summaries, verified turns, tickets and feedback are stored in a small file-backe
 | Testing interface | Start/End, live state indicator, test-orders helper, scenario chips, call log and summary. |
 | Optional extras | See [Beyond the basics](#beyond-the-basics-section-8) below. |
 
-## Beyond the basics (section 8)
+## Beyond the basics 
 
 Each optional item, and the decision behind it:
 
