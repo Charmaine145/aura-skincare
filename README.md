@@ -267,7 +267,8 @@ npm run dev                     # http://localhost:3000
 Add `GEMINI_API_KEY` to `.env.local` for the full AI experience. Without any key, the app runs in the labelled rule-based demo mode. Set `ADMIN_TOKEN` to protect `/admin` locally; without it, the dashboard is open only in non-production. Set `ARIA_DATA_DIR` if you want the demo records stored outside the default `.data` directory. Microphone access works on `localhost` and HTTPS only.
 
 ```sh
-npm test            # unit + route tests (no network: providers are mocked)
+npm test            # all unit + route tests (168 tests, no network: providers are mocked)
+npm run test:eval   # AI evaluation & regression suite (54 deterministic tests covering orders, cancellations, returns, COD, policies, tool selection, false-success claims, RAG grounding, VAD, summary validation, admin auth, PII leakage)
 npm run typecheck
 npm run build
 npx tsx scripts/check-gemini.ts          # optional live check against Gemini (uses a little quota)

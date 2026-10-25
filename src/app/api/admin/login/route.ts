@@ -25,13 +25,13 @@ export async function POST(request: Request) {
   const response = Response.json({ ok: true });
   response.headers.append(
     "Set-Cookie",
-    `${ADMIN_COOKIE}=${encodeURIComponent(token)}; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=${ADMIN_MAX_AGE}${process.env.NODE_ENV === "production" ? "; Secure" : ""}`,
+    `${ADMIN_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ADMIN_MAX_AGE}${process.env.NODE_ENV === "production" ? "; Secure" : ""}`,
   );
   return response;
 }
 
 export async function DELETE() {
   const response = Response.json({ ok: true });
-  response.headers.append("Set-Cookie", `${ADMIN_COOKIE}=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0`);
+  response.headers.append("Set-Cookie", `${ADMIN_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
   return response;
 }

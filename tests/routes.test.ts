@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { POST as adminLogin } from "../src/app/api/admin/login/route";
 import { POST as chat } from "../src/app/api/chat/route";
 import { POST as summary } from "../src/app/api/summary/route";
 import { POST as transcribe } from "../src/app/api/transcribe/route";
@@ -16,6 +17,13 @@ async function events(response: Response) {
   for await (const event of readNdjson<ChatStreamEvent>(response.body!)) out.push(event);
   return out;
 }
+
+test("admin login cookie is available to the protected admin API", () =>
+  withEnv({ ADMIN_TOKEN: "test-admin-token", NODE_ENV: "production" }, async () => {
+    const response = await adminLogin(post("http://localhost/api/admin/login", { token: "test-admin-token" }));
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("Set-Cookie") ?? "", /(?:^|;\s*)Path=\/;/);
+  }));
 
 test("chat streams tool events, the reply and a new signed session", () =>
   withEnv({ GEMINI_API_KEY: undefined, OPENAI_API_KEY: undefined }, async () => {
