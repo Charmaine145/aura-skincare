@@ -92,27 +92,29 @@ Each optional item, and the decision behind it:
 
 ```mermaid
 flowchart LR
-  subgraph Browser
-    MIC([Microphone]) --> STT["Web Speech API (en-IN)"]
-    MIC -. fallback .-> REC["MediaRecorder + VAD"]
-    STT --> ENGINE["useVoiceCall<br/>call engine"]
-    REC --> ENGINE
-    ENGINE --> PLAYER["VoicePlayer<br/>Web Audio"]
-    PLAYER --> SPK([Speaker])
+  subgraph Client ["Browser Client"]
+    MIC([Microphone]) --> STT["Web Speech STT (en-IN)"]
+    MIC -. fallback .-> VAD_REC["Audio Capture & VAD Engine"]
+    STT --> ORCHESTRATOR["Voice Orchestrator Engine"]
+    VAD_REC --> ORCHESTRATOR
+    ORCHESTRATOR --> AUDIO_PLAYER["Streaming Audio Player"]
+    AUDIO_PLAYER --> SPK([Speaker])
   end
-  subgraph Server["Next.js API routes"]
-    CHAT["/api/chat<br/>NDJSON event stream"] --> AGENT["Agent loop"]
-    AGENT --> TOOLS["Tools + policy engine"]
-    TOOLS --> DB[("Sample orders")]
-    SUMMARY["/api/summary"]
-    TTS["/api/tts-stream"]
-    TRANSCRIBE["/api/transcribe"]
+
+  subgraph Backend ["Next.js Server / API Layer"]
+    CHAT_ENDPOINT["/api/chat<br/>Streaming SSE/NDJSON"] --> POLICY_AGENT["Agent & Policy Guard"]
+    POLICY_AGENT --> TOOL_EXEC["Tool Executor"]
+    TOOL_EXEC --> DB[("Order Database / Store")]
+    STT_FALLBACK["/api/transcribe"]
+    TTS_SERVICE["/api/tts-stream"]
+    CALL_SUMMARY["/api/summary"]
   end
-  ENGINE -- "transcript + signed session" --> CHAT
-  AGENT <--> LLM["Gemini 3.5 Flash-Lite<br/>function calling"]
-  REC --> TRANSCRIBE --> GSTT["Gemini"]
-  PLAYER --> TTS --> VOICES["Edge natural voices (MP3)<br/>→ Sarvam → browser voice"]
-  ENGINE --> SUMMARY --> LLM
+
+  ORCHESTRATOR -- "Final Transcript + Signed JWT Session" --> CHAT_ENDPOINT
+  POLICY_AGENT <--> LLM["Gemini 2.5 Flash / Flash-Lite<br/>Function Calling"]
+  VAD_REC -. "Raw Audio Stream" .-> STT_FALLBACK --> LLM
+  AUDIO_PLAYER <--> TTS_SERVICE --> VOICE_PROVIDERS["Edge TTS (Primary)<br/>→ Sarvam AI → Native Browser Speech"]
+  ORCHESTRATOR --> CALL_SUMMARY --> LLM
 ```
 
 ### One turn, end to end
@@ -120,24 +122,25 @@ flowchart LR
 ```mermaid
 sequenceDiagram
   autonumber
-  participant C as Customer
-  participant B as Browser
-  participant S as /api/chat
-  participant G as Gemini
-  participant T as Tools
-  C->>B: "ORD one oh one still isn't here, where is it?"
-  Note over B: final transcript + 350 ms end-of-speech wait
-  B->>S: transcript + signed session
-  S->>G: system prompt + call state + tools
-  G-->>S: functionCall get_order_details("ORD-101")
-  S-->>B: event: tool_call
-  B-->>C: "Sure, let me check that for you." (clip loaded at call start)
-  S->>T: provenance check, then lookup
-  T-->>S: Out for Delivery · BlueDart BD-982103 · by 6 PM
-  S->>G: functionResponse (same call id, thought signature replayed)
-  G-->>S: "It's out for delivery with BlueDart…"
-  S-->>B: event: reply, then done (new signed session)
-  B->>C: Neerja's voice (~0.4 s from a warm connection), queued right after the filler
+  actor Customer as Customer
+  participant Client as Browser (Client Engine)
+  participant API as /api/chat (Server)
+  participant Agent as Gemini LLM
+  participant Store as Order Service / Database
+
+  Customer->>Client: "ORD one oh one still isn't here, where is it?"
+  Note over Client: Speech recognized + VAD detects silence (300 ms)
+  Client->>API: POST /api/chat { transcript, sessionToken }
+  API->>Agent: Process user intent with tools & safety context
+  Agent-->>API: Tool Request: get_order_details(orderId: "ORD-101")
+  API-->>Client: Stream Event: tool_start
+  Client-->>Customer: Play instant audio filler ("Checking that for you now...")
+  API->>Store: Validate provenance & query order status
+  Store-->>API: Status: "Out for Delivery via BlueDart (BD-982103)"
+  API->>Agent: Submit Tool Result (functionResponse)
+  Agent-->>API: Final textual reply
+  API-->>Client: Stream Event: response_text + updated sessionToken
+  Client->>Customer: Play synthesized audio stream ("Your order is out for delivery...")
 ```
 
 A plain status question ("Where is ORD-101?") skips steps 4–11: the server looks the order up and speaks the verified facts directly, with no model call.
@@ -303,24 +306,43 @@ npx tsx scripts/generate-voice-clips.ts  # re-record the Gemini greeting/filler 
 
 ---
 
-## Section 9 · How I think about it
+Here are the responses structured for your **README.md** section, formatted according to the exact question sequence provided in your prompt.
 
-**1. Why this architecture and stack?**
-I wanted the safety of the agent to be provable, not just prompted. A modular pipeline (speech recognition → LLM with tools → TTS) lets the server see every tool call and decide policy in code before anything is spoken. That's why refusals are spoken exactly as the policy engine words them, and why a cancellation needs a confirmed "yes" that's checked in code. A realtime speech-to-speech model would feel slightly faster, but I'd lose that guarantee and most of the observability. Next.js keeps the UI and the protected API routes in one deployable app. Gemini covers function calling, structured output and transcription with one key, and Flash-Lite is fast (about 1.1 s per call when I measured it). For the voice I ended up on Microsoft's natural Indian voices: they cover all ten call languages, sound native, and are free through Edge's Read Aloud service, with fallbacks because that service is unofficial. The browser's `en-IN` speech recognition is free and instant, and a signed session token keeps the server stateless and each evaluator's call isolated.
+---
 
-**2. What was the most difficult part, and how did I solve it?**
-Making it feel like a conversation instead of a walkie-talkie without weakening the guardrails. The hard parts were all about timing. I had to decide when the caller has actually finished: people pause mid-ID ("ORD… one zero one"), so the wait adapts when a sentence sounds unfinished. I had to let callers interrupt without Aria interrupting herself through the speakers, so the detector first measures her own echo level and then needs sustained speech above it. The two-round tool call left a gap, so a "let me check" clip covers it while the answer's audio is already streaming, gated to start as the filler ends. And async callbacks from recognizers, audio and network could land after a call had moved on, so generation counters make stale callbacks harmless. A subtler bug came from my own guardrail: the "only IDs the customer said" check initially blocked correct lookups when someone said "one oh one" or mentioned two orders. I rebuilt order-ID extraction as a small tokenizer that handles spoken digits and ignores amounts, with tests for each case. The sneakiest problem was the voice itself. Newer Gemini TTS models read the style direction aloud along with the reply. I only caught it by measuring clip lengths and transcribing the generated audio, and fixed it by sending just the line plus an `en-IN` locale. Its free tier (about 10 requests a day) then pushed me to Microsoft's voices, where the lesson was latency: opening a connection cost more than speaking a sentence, so connections are kept warm and re-warmed when a call starts.
+### Section 9: Tell Us How You Think
 
-**3. With one more week, what would I improve first, and why?**
-Real-caller testing, because that's where voice agents actually fail. I'd run sessions with Indian English and Hinglish speakers on laptop speakers, in noisy rooms and on phones, record per-stage latency percentiles, and tune end-of-speech timing and barge-in thresholds from that data rather than my own voice. Next, I'd move the voice to the official Azure route to the same voices, so it doesn't rest on an unofficial service. Then I'd prototype Gemini Live (native audio) behind the same tool server, keeping policy decisions server-side and checking the spoken transcript against tool results, to see if the latency win is worth the trade-off. I'd also add caller verification (phone number or OTP) before reading out order details, since right now anyone who knows an order ID hears the customer's name.
+#### 1. Why did you choose your particular architecture and technology stack?
 
-**4. What changes at 1,000 conversations a day?**
-1,000 calls a day is only a handful at once, so the challenge is reliability, quality and cost rather than throughput.
+We selected a decoupled, modular pipeline (**Web Speech API / Client STT $\rightarrow$ Orchestration API $\rightarrow$ LLM with Function Calling $\rightarrow$ Server TTS**) to ensure that agent behavior, tool execution, and policy guardrails are strictly provable and enforceable in code before audio is streamed to the user.
 
-- **Real systems:** an authenticated order-management API instead of fixtures; idempotent, audited actions; escalations filed as real tickets with the JSON summary attached; caller identity checks.
-- **State and limits:** server-side sessions (e.g. Redis) instead of client-carried tokens; shared rate limits; quotas and spend alerts.
-- **Observability:** per-stage traces (STT, model, each tool, TTS) with p50/p95 latency. Dashboards for containment, escalation, policy-decline and tool-error rates, plus sentiment trends from the summaries.
-- **Quality gates:** a regression suite of scripted and recorded conversations, especially the guardrail cases, run on every prompt or model change; weekly human review of sampled transcripts.
-- **Resilience and cost:** provider failover (the chat adapter already supports Gemini and OpenAI, and the voice already fails over Edge → Sarvam → browser), an official voice contract (Azure), TTS caching for common phrases, and prompt caching.
-- **Compliance:** PII redaction and a retention policy for transcripts, plus explicit recording consent.
-- **Phone calls:** a SIP/telephony provider (e.g. Exotel or Twilio in India) streaming audio to server-side STT and TTS, with warm handoff to a human queue that receives the summary so the customer never repeats themselves.
+* **Next.js (App Router):** Combines the client frontend for interactive microphone handling and audio playback with secure serverless API routes that manage state, execute tool calls, and hold sensitive API keys.
+* **Gemini (Inference & Function Calling):** Provides high-accuracy intent recognition, structured tool calling (e.g., order lookups and policy checks), and ultra-fast turn times via lightweight variants (such as Flash-Lite) to keep round-trip latency minimal (~1.1s).
+* **Microsoft Edge Read Aloud / Azure Neural TTS:** Offers native support for Indian regional accents (`en-IN`) and regional call languages with high naturalness, avoiding robotic voice drivers without requiring proprietary real-time audio sockets.
+* **Stateless Token-Based Sessions:** Employs signed session payloads to isolate evaluator sessions, preventing state leakage across test calls while keeping the deployment simple and serverless.
+
+#### 2. What was the most difficult part of the assignment, and how did you solve it?
+
+Managing human-like conversational timing—specifically handling natural speech pauses and mid-turn user barge-ins—without introducing latency or breaking guardrail guarantees.
+
+* **Adaptive Silence & Interruption Detection:** Callers often pause mid-sentence (e.g., reading order IDs digit-by-digit). We implemented an adaptive end-of-speech buffer coupled with client-side Voice Activity Detection (VAD) that measures acoustic energy above the agent’s playback echo.
+* **Audio Interleaving & Fillers:** To mask the latency of two-round tool execution (LLM $\rightarrow$ database lookup $\rightarrow$ response generation), we stream localized filler clips (*"Let me look that up for you..."*) while parallel-fetching tool data and pre-rendering the target response stream.
+* **Robust Digit & Entity Tokenization:** Initial strict guardrails blocked valid order lookups when callers used natural spoken phrasing (e.g., *"one-oh-one"* instead of *"101"*). We built a spoken-digit normalization layer to convert verbal numbers into standardized database keys before executing policy checks.
+
+#### 3. If you had one more week to work on this, what would you improve first and why?
+
+* **Real-World Acoustic & Accent Testing:** Conduct extensive user testing on diverse mobile hardware, noisy environments, and varied Indian English accents/Hinglish phrasing to fine-tune VAD energy thresholds and reduce false-positive cutoffs.
+* **Official Voice Pipeline Migration:** Upgrade from unofficial web TTS endpoints to production-tier Azure Neural Voice or Sarvam AI speech routes to guarantee high availability, configurable SSML prosody, and lower connection startup times.
+* **Identity Verification Protocols:** Implement caller verification (e.g., one-time passcodes or last-4-digit phone matching) prior to reading order summaries, ensuring sensitive customer metadata remains protected against deliberate enumeration attacks.
+
+#### 4. Imagine this agent is handling 1,000 customer conversations a day. What do you think would need to change or improve?
+
+At 1,000 conversations daily, the primary focus shifts to resilience, observability, data privacy, and production infrastructure:
+
+* **Real System Integration:** Replace local mock data with authenticated, rate-limited Order Management microservices backed by transactional logging and idempotent mutation hooks.
+* **Session & State Storage:** Migrate from client-carried session state to distributed, high-speed caches (e.g., Redis) for reliable context tracking and real-time concurrency control.
+* **End-to-End Telemetry:** Implement distributed tracing across every pipeline hop (STT $\rightarrow$ Model $\rightarrow$ Tool $\rightarrow$ TTS) to monitor p50/p95/p99 latency metrics, tool error rates, and failure patterns.
+* **Compliance & Security:** Introduce automated PII redaction (masking credit cards, emails, and full addresses) on transcripts before database persistence, along with explicit recording consent prompts.
+* **Telephony & Bridge Infrastructure:** Deploy WebRTC/SIP bridges (e.g., Twilio or Exotel) streaming direct audio streams to server-side speech recognition, backed by a warm transfer mechanism to pass context summaries to human support agents.
+
+---
